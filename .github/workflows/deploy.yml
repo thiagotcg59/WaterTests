@@ -1,9 +1,8 @@
-name: Deploy Next.js to GitHub Pages
+name: Deploy to GitHub Pages
 
 on:
   push:
     branches: ["main"]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,7 +11,7 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -23,25 +22,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Node.js
+      
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: "npm"
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
+          node-version: "20"
+          cache: 'npm'
+          
       - name: Install dependencies
-        run: npm ci
-
-      - name: Build
+        run: npm install
+        
+      - name: Build with Next.js
         run: npm run build
-
-      - name: Add .nojekyll
-        run: touch out/.nojekyll
-
+        
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -50,4 +43,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-

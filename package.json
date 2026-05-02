@@ -1,21 +1,31 @@
 {
-  "name": "water-tests",
+  "name": "epanet-dashboard",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
+    "@turf/turf": "^7.3.5",
+    "@types/dagre": "^0.7.54",
+    "@xyflow/react": "^12.10.2",
     "clsx": "^2.1.1",
-    "framer-motion": "^12.38.0",
+    "dagre": "^0.8.5",
+    "epanet-js": "^0.8.0",
     "lucide-react": "^1.14.0",
+    "maplibre-gl": "^5.24.0",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "tailwind-merge": "^3.5.0"
+    "react-force-graph-2d": "^1.29.1",
+    "recharts": "^3.8.1",
+    "shp-write": "^0.3.2",
+    "tailwind-merge": "^3.5.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

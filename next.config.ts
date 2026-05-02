@@ -1,12 +1,7 @@
 import type { NextConfig } from "next";
 
-const repo = "WaterTests";
-
 const nextConfig: NextConfig = {
-  output: "export",
-  images: { unoptimized: true },
-  basePath: `/${repo}`,
-  assetPrefix: `/${repo}/`,
+  /* config options here */
 };
 
 export default nextConfig;

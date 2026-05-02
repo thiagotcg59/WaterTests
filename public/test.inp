@@ -1,0 +1,41 @@
+[TITLE]
+Exemplo de Rede de Teste
+
+[JUNCTIONS]
+;ID	Elev	Demand	Pattern
+J1	100	0	
+J2	90	150	
+J3	85	200	
+
+[RESERVOIRS]
+;ID	Head	Pattern
+R1	150	
+
+[TANKS]
+;ID	Elevation	InitLevel	MinLevel	MaxLevel	Diameter	MinVol	VolCurve
+T1	120	5	1	10	15	0	
+
+[PIPES]
+;ID	Node1	Node2	Length	Diameter	Roughness	MinorLoss	Status
+P1	R1	J1	1000	300	100	0	Open
+P2	J1	J2	500	200	100	0	Open
+P3	J2	J3	800	150	100	0	Open
+P4	J3	T1	1200	250	100	0	Open
+
+[PUMPS]
+;ID	Node1	Node2	Parameters
+PU1	J1	J3	HEAD 1
+
+[VALVES]
+;ID	Node1	Node2	Diameter	Type	Setting	MinorLoss
+V1	J2	J3	150	PRV	50	0
+
+[COORDINATES]
+;Node	X-Coord	Y-Coord
+R1	0	1000
+J1	500	1000
+J2	1000	800
+J3	1500	800
+T1	2000	1000
+
+[END]
