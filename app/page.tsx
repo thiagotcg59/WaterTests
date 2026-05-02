@@ -243,6 +243,7 @@ export default function Home() {
   const [telemetryReadings, setTelemetryReadings] = useState<Record<string, TelemetrySample[]>>({});
   const [showAISectorizationPanel, setShowAISectorizationPanel] = useState(false);
   const [isAISectorizing, setIsAISectorizing] = useState(false);
+  const [isLoadingPresetInp, setIsLoadingPresetInp] = useState(false);
   const [aiSectorizationConfig, setAISectorizationConfig] = useState<AISectorizationConfig>(DEFAULT_AI_SECTORIZATION_CONFIG);
   const [aiSectorizationAnalysis, setAISectorizationAnalysis] = useState('');
   const [aiSectorizationScenarios, setAISectorizationScenarios] = useState<AISectorizationScenario[]>([]);
@@ -441,6 +442,28 @@ export default function Home() {
       setIsSimulating(false);
     }
   };
+
+  const handleLoadPresetInp = useCallback(async () => {
+    setIsLoadingPresetInp(true);
+    setError(null);
+    setErrorLog(null);
+    setShowErrorLog(false);
+    try {
+      const fileName = 'teste03-regenerado.inp';
+      const response = await fetch(`/inp-arc/${fileName}`);
+      const content = await response.text();
+      if (!response.ok || !content.trim()) {
+        throw new Error(`Falha ao abrir preset INP (HTTP ${response.status}).`);
+      }
+      await handleFileLoaded(content, fileName);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Erro ao abrir arquivo preset: ${msg}`);
+      setErrorLog(msg);
+    } finally {
+      setIsLoadingPresetInp(false);
+    }
+  }, []);
 
   const filteredSector = useMemo(
     () => sectors.find(s => s.id === filteredSectorId) || null,
@@ -1352,7 +1375,11 @@ export default function Home() {
         {!networkData ? (
           <div className="flex-1 flex flex-col items-center justify-center">
             <div className="w-full max-w-xl">
-              <FileUploader onFileLoaded={handleFileLoaded} />
+              <FileUploader
+                onFileLoaded={handleFileLoaded}
+                onLoadPreset={handleLoadPresetInp}
+                isLoadingPreset={isLoadingPresetInp}
+              />
             </div>
           </div>
         ) : (

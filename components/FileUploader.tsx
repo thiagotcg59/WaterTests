@@ -3,9 +3,11 @@ import { Upload } from 'lucide-react';
 
 interface FileUploaderProps {
   onFileLoaded: (content: string, fileName: string) => void;
+  onLoadPreset?: () => void;
+  isLoadingPreset?: boolean;
 }
 
-export default function FileUploader({ onFileLoaded }: FileUploaderProps) {
+export default function FileUploader({ onFileLoaded, onLoadPreset, isLoadingPreset = false }: FileUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputId = 'inp-file-upload';
@@ -107,6 +109,23 @@ export default function FileUploader({ onFileLoaded }: FileUploaderProps) {
           >
             Escolher arquivo INP
           </button>
+          {onLoadPreset && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onLoadPreset();
+              }}
+              disabled={isLoadingPreset}
+              className={`mt-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                isLoadingPreset
+                  ? 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'
+                  : 'border-red-500/60 bg-red-500/10 text-red-200 hover:bg-red-500/20'
+              }`}
+            >
+              {isLoadingPreset ? 'Abrindo arquivo...' : 'Abrir teste03-regenerado.inp'}
+            </button>
+          )}
         </div>
       </div>
     </div>
