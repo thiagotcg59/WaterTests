@@ -13,7 +13,7 @@ import {
 import { NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
 import {
   Layers as LayersIcon, Move, MousePointer2, PlusCircle, Spline, Trash2,
-  MapPin, Sun, Moon, Globe2, Square, LassoSelect, Target,
+  MapPin, Sun, Moon, Globe2, Square, LassoSelect, Target, SlidersHorizontal,
 } from 'lucide-react';
 import { polygon as turfPolygon } from '@turf/helpers';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
@@ -24,8 +24,10 @@ interface HydraulicMapProps {
   onElementClick: (element: NodeElement | LinkElement) => void;
   onNodeMoved?: (id: string, lng: number, lat: number) => void;
   onNodeAdded?: (lng: number, lat: number) => void;
+  onNodeAddedGetId?: (lng: number, lat: number) => string;
   onPipeAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
+  onValveInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
   onElementDeleted?: (id: string, kind: 'node' | 'link') => void;
   onSectorCreated?: (nodeIds: string[], linkIds: string[], points?: number[][]) => void;
   onSectorGeometryUpdated?: (id: string, geometry: any) => void;
@@ -43,6 +45,8 @@ interface HydraulicMapProps {
   onSmartSensorClick?: (sensor: SmartSensorRecommendation | SmartInstalledSensor) => void;
   hideDefaultLegend?: boolean;
   legendOverlay?: React.ReactNode;
+  editModeOverride?: EditMode;
+  onEditModeChange?: (mode: EditMode) => void;
 }
 
 // IDs de fontes/camadas no MapLibre
@@ -69,6 +73,10 @@ const LYR_SELECTED = 'lyr-selected-halo';
 const LYR_SMART_SENSORS = 'lyr-smart-sensors';
 const LYR_SMART_SENSOR_SYMBOLS = 'lyr-smart-sensor-symbols';
 
+const LYR_LINKS_HIT = 'lyr-links-hit';  // camada invisível de hit-area para tubos/bombas/válvulas
+const LYR_NODES_HIT = 'lyr-nodes-hit';  // camada invisível de hit-area para nós
+const LYR_SELECTED_LINK = 'lyr-selected-link'; // halo violeta para link selecionado
+
 const LYR_SECTOR_FILL = 'lyr-sector-fill';
 const LYR_SECTOR_OUTLINE = 'lyr-sector-outline';
 const LYR_SECTOR_VERTICES = 'lyr-sector-vertices';
@@ -81,11 +89,12 @@ const PIPE_SNAP_RADIUS_PX = 14;
 
 export default function HydraulicMap({
   data, onElementClick,
-  onNodeMoved, onNodeAdded, onPipeAdded, onPipeConnectedToLink, onElementDeleted, onSectorCreated, onSectorGeometryUpdated,
+  onNodeMoved, onNodeAdded, onNodeAddedGetId, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onSectorCreated, onSectorGeometryUpdated,
   nodeColorMode = 'type', linkColorMode = 'type',
   selectedId, highlightIds, highlightColor, sectors, showSectorPolygons,
   smartSensorRecommendations = [], smartInstalledSensors = [], selectedSmartSensorId = null, onAddSmartSensor, onSmartSensorClick,
   hideDefaultLegend = false, legendOverlay,
+  editModeOverride, onEditModeChange,
 }: HydraulicMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -94,8 +103,11 @@ export default function HydraulicMap({
   const {
     basemap, setBasemap,
     layers, toggleLayer,
-    editMode, setEditMode,
+    editMode: internalEditMode, setEditMode: setInternalEditMode,
   } = useMapState();
+
+  const editMode = editModeOverride ?? internalEditMode;
+  const setEditMode = (m: EditMode) => { setInternalEditMode(m); onEditModeChange?.(m); };
 
   const [showLayersPanel, setShowLayersPanel] = useState(true);
   const [pendingFirstNode, setPendingFirstNode] = useState<string | null>(null);
@@ -360,15 +372,23 @@ export default function HydraulicMap({
     applyLayerVisibility(m, layers);
   }, [layers, mapReady]);
 
-  // Atualiza highlight de seleção
+  // Atualiza highlight de seleção (nó = círculo violeta, link = linha violeta)
   useEffect(() => {
     const m = mapRef.current;
-    if (!m || !mapReady || !m.getLayer(LYR_SELECTED)) return;
+    if (!m || !mapReady) return;
     if (selectedId) {
-      m.setFilter(LYR_SELECTED, ['==', ['get', 'id'], selectedId]);
-      m.setLayoutProperty(LYR_SELECTED, 'visibility', 'visible');
+      const idFilter = ['==', ['get', 'id'], selectedId] as maplibregl.FilterSpecification;
+      if (m.getLayer(LYR_SELECTED)) {
+        m.setFilter(LYR_SELECTED, idFilter);
+        m.setLayoutProperty(LYR_SELECTED, 'visibility', 'visible');
+      }
+      if (m.getLayer(LYR_SELECTED_LINK)) {
+        m.setFilter(LYR_SELECTED_LINK, idFilter);
+        m.setLayoutProperty(LYR_SELECTED_LINK, 'visibility', 'visible');
+      }
     } else {
-      m.setLayoutProperty(LYR_SELECTED, 'visibility', 'none');
+      if (m.getLayer(LYR_SELECTED)) m.setLayoutProperty(LYR_SELECTED, 'visibility', 'none');
+      if (m.getLayer(LYR_SELECTED_LINK)) m.setLayoutProperty(LYR_SELECTED_LINK, 'visibility', 'none');
     }
   }, [selectedId, mapReady]);
 
@@ -511,6 +531,13 @@ export default function HydraulicMap({
       m.addSource(SRC_SMART_SENSORS, { type: 'geojson', data: smartSensorsGeoJson });
     }
 
+    if (!m.getLayer(LYR_LINKS_HIT)) {
+      m.addLayer({
+        id: LYR_LINKS_HIT, type: 'line', source: SRC_LINKS,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#000000', 'line-width': 14, 'line-opacity': 0 },
+      });
+    }
     if (!m.getLayer(LYR_PIPES)) {
       m.addLayer({
         id: LYR_PIPES, type: 'line', source: SRC_LINKS,
@@ -557,15 +584,21 @@ export default function HydraulicMap({
         },
       });
     }
+    if (!m.getLayer(LYR_NODES_HIT)) {
+      m.addLayer({
+        id: LYR_NODES_HIT, type: 'circle', source: SRC_NODES,
+        paint: { 'circle-radius': 16, 'circle-opacity': 0, 'circle-stroke-width': 0 },
+      });
+    }
     if (!m.getLayer(LYR_JUNCTIONS)) {
       m.addLayer({
         id: LYR_JUNCTIONS, type: 'circle', source: SRC_NODES,
         filter: ['==', ['get', 'kind'], 'junction'],
         paint: {
-          'circle-radius': 4.5,
+          'circle-radius': 6.5,
           'circle-color': '#111827',
           'circle-stroke-color': '#ffffff',
-          'circle-stroke-width': 1,
+          'circle-stroke-width': 2,
         },
       });
     }
@@ -739,11 +772,24 @@ export default function HydraulicMap({
         filter: ['==', ['get', 'id'], '__none__'],
         layout: { visibility: 'none' },
         paint: {
-          'circle-radius': 12,
-          'circle-color': '#facc15',
-          'circle-opacity': 0.35,
-          'circle-stroke-color': '#facc15',
-          'circle-stroke-width': 2,
+          'circle-radius': 14,
+          'circle-color': '#a855f7',
+          'circle-opacity': 0.45,
+          'circle-stroke-color': '#a855f7',
+          'circle-stroke-width': 2.5,
+          'circle-stroke-opacity': 0.9,
+        },
+      });
+    }
+    if (!m.getLayer(LYR_SELECTED_LINK)) {
+      m.addLayer({
+        id: LYR_SELECTED_LINK, type: 'line', source: SRC_LINKS,
+        filter: ['==', ['get', 'id'], '__none__'],
+        layout: { visibility: 'none', 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#a855f7',
+          'line-width': 6,
+          'line-opacity': 0.75,
         },
       });
     }
@@ -869,7 +915,7 @@ export default function HydraulicMap({
   // ===== Interações =====
   const findNodeIdAt = useCallback((m: MLMap, e: MapMouseEvent): string | null => {
     const features = m.queryRenderedFeatures(e.point, {
-      layers: [LYR_JUNCTIONS, LYR_RESERVOIRS, LYR_TANKS],
+      layers: [LYR_NODES_HIT, LYR_JUNCTIONS, LYR_RESERVOIRS, LYR_TANKS],
     });
     const f = features[0] as MapGeoJSONFeature | undefined;
     return f ? (f.properties?.id as string) ?? null : null;
@@ -877,7 +923,7 @@ export default function HydraulicMap({
 
   const findLinkIdAt = useCallback((m: MLMap, e: MapMouseEvent): string | null => {
     const features = m.queryRenderedFeatures(e.point, {
-      layers: [LYR_PIPES, LYR_PUMPS, LYR_VALVES, LYR_SPECIAL, LYR_VALVE_NODE],
+      layers: [LYR_LINKS_HIT, LYR_PIPES, LYR_PUMPS, LYR_VALVES, LYR_SPECIAL, LYR_VALVE_NODE],
     });
     const f = features[0] as MapGeoJSONFeature | undefined;
     return f ? (f.properties?.id as string) ?? null : null;
@@ -1058,20 +1104,49 @@ export default function HydraulicMap({
       // Modo adicionar tubo
       if (editMode === 'addPipe') {
         const nodeId = findNodeIdAt(m, e);
+
         if (!pendingFirstNode) {
-          if (!nodeId) return;
-          setPendingFirstNode(nodeId);
+          if (nodeId) {
+            // Clicou num nó existente → define como ponto de origem
+            setPendingFirstNode(nodeId);
+          } else if (onNodeAddedGetId) {
+            // Clicou em espaço vazio → cria nó e define como origem
+            const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
+            if (newId) setPendingFirstNode(newId);
+          }
         } else {
           if (nodeId && pendingFirstNode !== nodeId) {
+            // Clicou num nó existente diferente → fecha o tubo
             onPipeAdded?.(pendingFirstNode, nodeId);
             setPendingFirstNode(null);
             return;
           }
-          const snap = findPipeSnapAt(m, e);
-          if (snap) {
-            onPipeConnectedToLink?.(pendingFirstNode, snap.linkId, snap.lng, snap.lat);
-            setPendingFirstNode(null);
+          if (!nodeId) {
+            const snap = findPipeSnapAt(m, e);
+            if (snap) {
+              // Clicou perto de um tubo → conecta ao ponto do tubo
+              onPipeConnectedToLink?.(pendingFirstNode, snap.linkId, snap.lng, snap.lat);
+              setPendingFirstNode(null);
+              return;
+            }
+            if (onNodeAddedGetId) {
+              // Clicou em espaço vazio → cria nó de destino e fecha o tubo
+              const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
+              if (newId) {
+                onPipeAdded?.(pendingFirstNode, newId);
+                setPendingFirstNode(null);
+              }
+            }
           }
+        }
+        return;
+      }
+
+      // Modo inserir válvula em tubo: clica próximo a um tubo, faz split + insere válvula
+      if (editMode === 'addValve') {
+        const snap = findPipeSnapAt(m, e);
+        if (snap) {
+          onValveInsertedOnPipe?.(snap.linkId, snap.lng, snap.lat);
         }
         return;
       }
@@ -1375,7 +1450,7 @@ export default function HydraulicMap({
       }
     };
     const leavePointer = () => { if (!draggingRef.current) m.getCanvas().style.cursor = ''; };
-    [LYR_JUNCTIONS, LYR_RESERVOIRS, LYR_TANKS, LYR_PIPES, LYR_PUMPS, LYR_VALVES, LYR_VALVE_NODE, LYR_SECTOR_VERTICES].forEach(id => {
+    [LYR_NODES_HIT, LYR_JUNCTIONS, LYR_RESERVOIRS, LYR_TANKS, LYR_LINKS_HIT, LYR_PIPES, LYR_PUMPS, LYR_VALVES, LYR_VALVE_NODE, LYR_SECTOR_VERTICES].forEach(id => {
       m.on('mouseenter', id, enterPointer);
       m.on('mouseleave', id, leavePointer);
     });
@@ -1389,7 +1464,7 @@ export default function HydraulicMap({
     };
   }, [
     editMode, mapReady, data,
-    geo, onElementClick, onNodeMoved, onNodeAdded, onPipeAdded, onPipeConnectedToLink, onElementDeleted,
+    geo, onElementClick, onNodeMoved, onNodeAdded, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
     showSectorPolygons, onSectorGeometryUpdated,
     pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, onAddSmartSensor, onSmartSensorClick,
   ]);
@@ -1466,8 +1541,9 @@ function Toolbar({
         <Btn mode="move" icon={Move} label="Mover nó" />
         <Btn mode="addNode" icon={PlusCircle} label="Novo nó" />
         <Btn mode="addPipe" icon={Spline} label="Novo tubo" />
+        <Btn mode="addValve" icon={SlidersHorizontal} label="Inserir válvula" />
         <Btn mode="inspectCoord" icon={Target} label="Inspecionar X,Y" />
-        <Btn mode="drawPolygon" icon={LassoSelect} label="Criar Setor" />
+
         <Btn mode="delete" icon={Trash2} label="Excluir" />
       </div>
       {editMode === 'addPipe' && (
@@ -1477,38 +1553,12 @@ function Toolbar({
             : 'Clique no primeiro nó'}
         </div>
       )}
-      {editMode === 'drawPolygon' && (
-        <div className="flex flex-col gap-2 p-3 bg-zinc-900/95 border border-purple-500/50 rounded-lg shadow-xl max-w-[280px]">
-          <div className="flex items-center gap-2 text-purple-400 font-bold text-xs uppercase tracking-wider">
-            <LassoSelect className="w-4 h-4" />
-            Criando Novo Setor
-          </div>
-          
-          <ul className="text-[11px] text-zinc-300 space-y-1.5 list-disc pl-4">
-            <li>Clique no mapa para marcar os vértices.</li>
-            <li><b>Duplo-clique</b> para fechar e salvar.</li>
-            <li>Pontos atuais: <span className="text-white font-mono bg-zinc-800 px-1 rounded">${polygonPoints.length}</span></li>
-          </ul>
-
-          <div className="flex gap-2 mt-1">
-            <button
-              onClick={() => setPolygonPoints([])}
-              className="flex-1 px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-medium rounded border border-zinc-700 transition-colors"
-            >
-              Limpar Pontos
-            </button>
-            <button
-              onClick={() => {
-                setPolygonPoints([]);
-                setEditMode('select');
-              }}
-              className="flex-1 px-2 py-1.5 bg-red-950/30 hover:bg-red-900/50 text-red-400 text-[10px] font-medium rounded border border-red-500/30 transition-colors"
-            >
-              Cancelar
-            </button>
-          </div>
+      {editMode === 'addValve' && (
+        <div className="text-[11px] bg-cyan-500/15 text-cyan-100 border border-cyan-500/40 rounded-md px-2 py-1">
+          Clique próximo a um tubo para dividi-lo e inserir a válvula no ponto exato do clique.
         </div>
       )}
+
     </div>
   );
 }

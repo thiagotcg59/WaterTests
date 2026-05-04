@@ -103,7 +103,7 @@ function LinkChart({ elementId, timeSeries, selectedTimeIndex }: { elementId: st
   const linkSeries = timeSeries.links[elementId];
   if (!linkSeries || linkSeries.flow.length === 0) return null;
 
-  const lpsToM3h = (v: number) => Number((v * 3.6).toFixed(2));
+  const lpsToM3h = (v: number) => Number((Math.abs(v) * 3.6).toFixed(2));
 
   const data = timeSeries.time.map((t, i) => ({
     hora: formatHour(t),
@@ -166,6 +166,15 @@ export default function ElementDetailsPanel({ element, onClose, onSaveLink, onSa
     onSaveLink(element.id, { diameter });
   };
 
+  const saveTipoPipe = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (isNode || !onSaveLink) return;
+    const form = new FormData(event.currentTarget);
+    const raw = String(form.get('tipoPipe') ?? '').trim();
+    const tipoPipe = (raw === 'Adutora' || raw === 'Rede') ? raw : undefined;
+    onSaveLink(element.id, { tipoPipe });
+  };
+
   const saveElevation = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isNode || !onSaveNode) return;
@@ -181,7 +190,7 @@ export default function ElementDetailsPanel({ element, onClose, onSaveLink, onSa
     const valveType = String(form.get('valveType') ?? 'TCV').toUpperCase();
     const settingRaw = String(form.get('setting') ?? '').trim();
     const setting = parseOptionalNumber(settingRaw) ?? settingRaw;
-    const status = String(form.get('status') ?? 'Open').trim() || 'Open';
+    const status = (String(form.get('status') ?? 'OPEN').trim() || 'OPEN').toUpperCase();
     const elevation = parseOptionalNumber(String(form.get('elevation') ?? ''));
     onSaveLink(element.id, { valveType, setting, status, elevation });
   };
@@ -309,7 +318,78 @@ export default function ElementDetailsPanel({ element, onClose, onSaveLink, onSa
               )}
               {renderField('Rugosidade', (element as LinkElement).roughness)}
               {renderField('Perda Menor', (element as LinkElement).minorLoss)}
-              {renderField('Status', (element as LinkElement).status)}
+
+              {element.type === 'pipe' && (onSaveLink ? (
+                <form onSubmit={saveTipoPipe} className="py-2 border-b border-zinc-100 dark:border-zinc-800">
+                  <label className="block">
+                    <span className="flex items-center justify-between text-sm text-zinc-500 dark:text-zinc-400 mb-1">
+                      Tipo
+                    </span>
+                    <div className="flex gap-2">
+                      <select
+                        name="tipoPipe"
+                        defaultValue={(element as LinkElement).tipoPipe ?? ''}
+                        className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none focus:border-red-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                      >
+                        <option value="">Não definido</option>
+                        <option value="Rede">Rede</option>
+                        <option value="Adutora">Adutora</option>
+                      </select>
+                      <button
+                        type="submit"
+                        title="Salvar tipo"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-red-500 text-white hover:bg-red-400"
+                      >
+                        <Save className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </label>
+                </form>
+              ) : (
+                (element as LinkElement).tipoPipe && (
+                  <div className="flex justify-between py-2 border-b border-zinc-100 dark:border-zinc-800">
+                    <span className="text-zinc-500 dark:text-zinc-400 text-sm">Tipo</span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${
+                      (element as LinkElement).tipoPipe === 'Adutora'
+                        ? 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300'
+                        : 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                    }`}>
+                      {(element as LinkElement).tipoPipe}
+                    </span>
+                  </div>
+                )
+              ))}
+              {onSaveLink ? (
+                <div className="py-2 border-b border-zinc-100 dark:border-zinc-800">
+                  <div className="flex items-center justify-between text-sm text-zinc-500 dark:text-zinc-400 mb-2">
+                    Status do trecho
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onSaveLink(element.id, { status: 'OPEN' })}
+                      className={`flex-1 px-2 py-1.5 rounded text-xs font-bold transition-all ${
+                        (element as LinkElement).status === 'OPEN'
+                          ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-900/20'
+                          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                      }`}
+                    >
+                      ABRIR
+                    </button>
+                    <button
+                      onClick={() => onSaveLink(element.id, { status: 'CLOSED' })}
+                      className={`flex-1 px-2 py-1.5 rounded text-xs font-bold transition-all ${
+                        (element as LinkElement).status === 'CLOSED'
+                          ? 'bg-red-500 text-white shadow-lg shadow-red-900/20'
+                          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                      }`}
+                    >
+                      FECHAR / DESLIGAR
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                renderField('Status', (element as LinkElement).status)
+              )}
               {renderField('Tipo da valvula', (element as LinkElement).valveType)}
               {renderField('Setting', (element as LinkElement).setting)}
               {renderField('Elevacao da valvula', (element as LinkElement).elevation, 'm')}
@@ -337,11 +417,11 @@ export default function ElementDetailsPanel({ element, onClose, onSaveLink, onSa
                     <span className="text-xs text-zinc-500">Status</span>
                     <select
                       name="status"
-                      defaultValue={String((element as LinkElement).status ?? 'Open')}
+                      defaultValue={String((element as LinkElement).status ?? 'OPEN').toUpperCase()}
                       className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none focus:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
                     >
-                      <option value="Open">Aberta (Open)</option>
-                      <option value="Closed">Fechada (Closed)</option>
+                      <option value="OPEN">Aberta (OPEN)</option>
+                      <option value="CLOSED">Fechada (CLOSED)</option>
                     </select>
                   </label>
                   <label className="block">

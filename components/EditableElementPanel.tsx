@@ -67,7 +67,7 @@ function MiniLinkChart({ elementId, timeSeries }: { elementId: string; timeSerie
 
   const data = timeSeries.time.map((t, i) => ({
     hora: formatHour(t),
-    'Vazao (m3/h)': Number((linkSeries.flow[i] * 3.6).toFixed(2)),
+    'Vazao (m3/h)': Number((Math.abs(linkSeries.flow[i] || 0) * 3.6).toFixed(2)),
   }));
 
   return (
@@ -120,6 +120,7 @@ export default function EditableElementPanel({
       return;
     }
 
+    const tipoPipeRaw = String(form.get('tipoPipe') ?? '').trim();
     onSaveLink(element.id, {
       length: optionalNumber(form.get('length')),
       diameter: optionalNumber(form.get('diameter')),
@@ -130,6 +131,7 @@ export default function EditableElementPanel({
       setting: optionalNumber(form.get('setting')) ?? String(form.get('setting') ?? ''),
       elevation: optionalNumber(form.get('elevation')),
       parameters: String(form.get('parameters') ?? ''),
+      tipoPipe: (tipoPipeRaw === 'Adutora' || tipoPipeRaw === 'Rede') ? tipoPipeRaw : undefined,
     });
   };
 
@@ -219,17 +221,32 @@ function LinkFields({ element }: { element: LinkElement }) {
       <Field name="roughness" label="Rugosidade" defaultValue={numberValue(element.roughness)} />
       <Field name="minorLoss" label="Perda menor" defaultValue={numberValue(element.minorLoss)} />
 
+      {element.type === 'pipe' && (
+        <label className="block">
+          <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Tipo</span>
+          <select
+            name="tipoPipe"
+            defaultValue={element.tipoPipe ?? ''}
+            className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500"
+          >
+            <option value="">Não definido</option>
+            <option value="Rede">Rede</option>
+            <option value="Adutora">Adutora</option>
+          </select>
+        </label>
+      )}
+
       {isValve ? (
         <>
           <label className="block">
             <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Status</span>
             <select
               name="status"
-              defaultValue={element.status || 'Open'}
+              defaultValue={(element.status || 'OPEN').toUpperCase()}
               className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500"
             >
-              <option value="Open">Aberta (Open)</option>
-              <option value="Closed">Fechada (Closed)</option>
+              <option value="OPEN">Aberta (OPEN)</option>
+              <option value="CLOSED">Fechada (CLOSED)</option>
             </select>
           </label>
           <label className="block">
@@ -251,7 +268,17 @@ function LinkFields({ element }: { element: LinkElement }) {
           <Field name="elevation" label="Elevacao da valvula" unit="m" defaultValue={numberValue(element.elevation)} />
         </>
       ) : (
-        <Field name="status" label="Status" defaultValue={element.status} />
+      <label className="block">
+        <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Status</span>
+        <select
+          name="status"
+          defaultValue={(element.status || 'OPEN').toUpperCase()}
+          className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500"
+        >
+          <option value="OPEN">Aberto (OPEN)</option>
+          <option value="CLOSED">Fechado (CLOSED)</option>
+        </select>
+      </label>
       )}
 
       <Field name="parameters" label="Parametros" defaultValue={element.parameters} />

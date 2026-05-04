@@ -38,6 +38,7 @@ export interface LinkElement {
   setting?: number | string;
   elevation?: number;
   parameters?: string;
+  tipoPipe?: 'Adutora' | 'Rede';
   // resultados da simulação
   flow?: number;
   velocity?: number;
@@ -64,6 +65,7 @@ export interface NetworkData {
   nodes: Record<string, NodeElement>;
   links: Record<string, LinkElement>;
   inpContent?: string;
+  hydraulicControls?: HydraulicControl[];
   sectors?: Sector[];
   customerMeters?: CustomerMeter[];
   smartSensors?: SmartInstalledSensor[];
@@ -82,6 +84,41 @@ export interface NetworkData {
     totalLength: number;
     avgDiameter: number;
   };
+}
+
+export type HydraulicControlKind = 'simple' | 'rule';
+export type HydraulicControlTargetType = 'pump' | 'valve' | 'pipe';
+export type HydraulicControlSensorType = 'node' | 'tank' | 'reservoir' | 'link' | 'time';
+export type HydraulicControlActionStatus = 'OPEN' | 'CLOSED' | 'ACTIVE';
+export type HydraulicControlLogic = 'AND' | 'OR';
+
+export interface HydraulicControlCondition {
+  id: string;
+  sensorType: HydraulicControlSensorType;
+  sensorId: string;
+  variable: 'TIME' | 'PRESSURE' | 'FLOW' | 'LEVEL' | 'STATUS';
+  operator: '<' | '<=' | '=' | '>=' | '>';
+  value: number | string;
+  logic?: HydraulicControlLogic;
+}
+
+export interface HydraulicControl {
+  id: string;
+  name: string;
+  kind: HydraulicControlKind;
+  enabled: boolean;
+  targetType: HydraulicControlTargetType;
+  targetId: string;
+  action: HydraulicControlActionStatus;
+  setting?: number;
+  priority: number;
+  hysteresisEnabled: boolean;
+  hysteresisOn?: number;
+  hysteresisOff?: number;
+  conditions: HydraulicControlCondition[];
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface SimulationStats {
@@ -175,6 +212,15 @@ export interface CustomerMeter {
   volumeMensalM3: number;
   demandaBaseCalculada: number;
   ativo: boolean;
+  // Novos campos para registro hidráulico no INP
+  name?: string;
+  nearestJunctionId?: string;
+  nearestJunctionDistance?: number;
+  elevation?: number;
+  pressure?: number | null;
+  pressureSeries?: Array<{ time: number; pressure: number | null }>;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type SmartSensorType =

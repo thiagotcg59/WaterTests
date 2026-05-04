@@ -1,4 +1,5 @@
 import { NetworkData, NodeElement, LinkElement } from '../types/epanet';
+import { buildCustomerMetersSection, buildCustomerMeterPressuresSection } from './customerMeters/customerMeterInpStorage';
 
 /**
  * Regenera um arquivo .inp a partir do estado interno NetworkData,
@@ -14,7 +15,10 @@ import { NetworkData, NodeElement, LinkElement } from '../types/epanet';
 type SectionKey =
   | 'JUNCTIONS' | 'RESERVOIRS' | 'TANKS'
   | 'PIPES' | 'PUMPS' | 'VALVES'
-  | 'COORDINATES';
+  | 'COORDINATES'
+  | 'CONTROLS'
+  | 'CUSTOMER_METERS'
+  | 'CUSTOMER_METER_PRESSURES';
 
 const NUMBER = (v: number | undefined, fallback = 0) =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback;
@@ -89,7 +93,7 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
             Math.max(1, NUMBER(l.diameter, 100)),
             NUMBER(l.roughness, 130),
             NUMBER(l.minorLoss),
-            l.status || 'Open',
+            (l.status || 'OPEN').toUpperCase(),
           ].join('\t')
         );
       }
@@ -128,12 +132,68 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
         out.push([quote(n.id), n.coordinates.x, n.coordinates.y].join('\t'));
       }
       return out;
+    case 'CONTROLS':
+      out.push(';Controles operacionais regenerados a partir da aba Modelagem Hidráulica');
+      for (const ctrl of data.hydraulicControls ?? []) {
+        if (ctrl.enabled === false) continue;
+        if (ctrl.kind !== 'simple') continue; // [RULES] preservadas via metadata; emitimos apenas controles simples nativos
+        const cond = ctrl.conditions?.[0];
+        if (!cond) continue;
+        const linkId = ctrl.targetId;
+        if (!linkId) continue;
+
+        // Ação: OPEN / CLOSED ou setting numérico (ACTIVE)
+        let action: string;
+        if (ctrl.action === 'ACTIVE' && typeof ctrl.setting === 'number') {
+          action = String(ctrl.setting);
+        } else {
+          action = ctrl.action;
+        }
+
+        // Sentinela do clausula
+        if (cond.sensorType === 'time' || cond.variable === 'TIME') {
+          const hours = typeof cond.value === 'number' ? cond.value : Number(cond.value) || 0;
+          out.push(`LINK ${quote(linkId)} ${action} AT TIME ${hours}`);
+          continue;
+        }
+
+        // IF NODE <id> ABOVE/BELOW <value>
+        const nodeId = cond.sensorId;
+        if (!nodeId) continue;
+        const opMap: Record<string, 'ABOVE' | 'BELOW'> = {
+          '>': 'ABOVE',
+          '>=': 'ABOVE',
+          '<': 'BELOW',
+          '<=': 'BELOW',
+          '=': 'ABOVE', // EPANET não tem '=' em [CONTROLS]; aproximação segura
+        };
+        const dir = opMap[cond.operator] ?? 'ABOVE';
+        const value = typeof cond.value === 'number' ? cond.value : Number(cond.value) || 0;
+        out.push(`LINK ${quote(linkId)} ${action} IF NODE ${quote(nodeId)} ${dir} ${value}`);
+      }
+      return out;
+    case 'CUSTOMER_METERS':
+      out.push(';Customer Meters: registro hidráulico (pressão, junction associada, elevação)');
+      for (const ln of buildCustomerMetersSection(data.customerMeters ?? [])) out.push(ln);
+      return out;
+    case 'CUSTOMER_METER_PRESSURES':
+      {
+        const lines = buildCustomerMeterPressuresSection(data.customerMeters ?? []);
+        if (lines.length > 0) {
+          out.push(';Série temporal de pressão dos Customer Meters (timestep × pressão)');
+          for (const ln of lines) out.push(ln);
+        }
+      }
+      return out;
   }
 }
 
 const ALL_SECTIONS: SectionKey[] = [
   'JUNCTIONS', 'RESERVOIRS', 'TANKS',
   'PIPES', 'PUMPS', 'VALVES', 'COORDINATES',
+  'CONTROLS',
+  'CUSTOMER_METERS',
+  'CUSTOMER_METER_PRESSURES',
 ];
 
 function stripMetadataLines(inp: string): string {
@@ -163,11 +223,15 @@ function encodeBase64Utf8(value: string): string {
 function appendDashboardMetadata(inp: string, data: NetworkData): string {
   const linkExtras = Object.fromEntries(
     Object.values(data.links)
-      .filter((link) => typeof link.elevation === 'number')
-      .map((link) => [link.id, { elevation: link.elevation }])
+      .filter((link) => typeof link.elevation === 'number' || link.tipoPipe)
+      .map((link) => [link.id, {
+        ...(typeof link.elevation === 'number' ? { elevation: link.elevation } : {}),
+        ...(link.tipoPipe ? { tipoPipe: link.tipoPipe } : {}),
+      }])
   );
 
   const metadataLines = [
+    `;@DG_META_HYDRAULIC_CONTROLS ${encodeBase64Utf8(JSON.stringify(data.hydraulicControls ?? []))}`,
     `;@DG_META_SECTORS ${encodeBase64Utf8(JSON.stringify(data.sectors ?? []))}`,
     `;@DG_META_CUSTOMER_METERS ${encodeBase64Utf8(JSON.stringify(data.customerMeters ?? []))}`,
     `;@DG_META_SMART_SENSORS ${encodeBase64Utf8(JSON.stringify(data.smartSensors ?? []))}`,

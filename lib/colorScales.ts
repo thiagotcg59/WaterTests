@@ -10,11 +10,11 @@ export interface ColorRange {
 }
 
 export const PRESSURE_RANGES: Array<{ max: number; color: string; label: string }> = [
-  { max: 0,   color: '#dc2626', label: 'Negativa' },
-  { max: 10,  color: '#f97316', label: '< 10 mca' },
-  { max: 20,  color: '#facc15', label: '10–20 mca' },
-  { max: 35,  color: '#22c55e', label: '20–35 mca' },
-  { max: 50,  color: '#0ea5e9', label: '35–50 mca' },
+  { max: 0,   color: '#1e3a8a', label: 'Negativa (< 0 mca)' },
+  { max: 10,  color: '#06b6d4', label: '0–9,9 mca' },
+  { max: 25,  color: '#22c55e', label: '10–24,9 mca' },
+  { max: 40,  color: '#f97316', label: '25–39,9 mca' },
+  { max: 50,  color: '#dc2626', label: '40–49,9 mca' },
   { max: Infinity, color: '#a855f7', label: '> 50 mca' },
 ];
 

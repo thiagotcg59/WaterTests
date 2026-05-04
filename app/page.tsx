@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseInpFile } from '../lib/parseInp';
 import { computeHydraulicStats } from '../lib/hydraulicStats';
 import { applyStatusOverrides } from '../lib/inpUtils';
-import { NetworkData, NodeElement, LinkElement, SimulationStats, Sector, TimeSeriesData, CustomerMeter, SmartInstalledSensor, SmartSensorRecommendation, AISectorizationConfig, AISectorizationScenario, TelemetrySensor, TelemetrySample } from '../types/epanet';
+import { NetworkData, NodeElement, LinkElement, SimulationStats, Sector, TimeSeriesData, CustomerMeter, SmartInstalledSensor, SmartSensorRecommendation, AISectorizationConfig, AISectorizationScenario, TelemetrySensor, TelemetrySample, HydraulicControl } from '../types/epanet';
 import FileUploader from '../components/FileUploader';
 import SummaryCards from '../components/SummaryCards';
 import NetworkViewer from '../components/NetworkViewer';
@@ -25,22 +25,35 @@ import CriticalityTab from '../components/CriticalityTab';
 import InventoryTab from '../components/InventoryTab';
 import InterpretacaoOperacionalTab from '../components/InterpretacaoOperacionalTab';
 import PressureIntelligentAnalysisTab from '../components/PressureIntelligentAnalysisTab';
-import { NodeColorMode, LinkColorMode } from '../lib/colorScales';
+import HydraulicControlsTab from '../components/HydraulicControlsTab';
+import ModelagemMapaGisView from '../components/ModelagemMapaGisView';
+import HydraulicIndicatorsTab from '../components/HydraulicIndicatorsTab';
+import ModelagemParametrosTab from '../components/ModelagemParametrosTab';
+import { enrichCustomerMeterWithNearest } from '../lib/customerMeters/customerMeterNearestJunction';
+import { applyPressuresToAllCustomerMeters } from '../lib/customerMeters/customerMeterHydraulics';
+import { stripCustomerMeterSections } from '../lib/customerMeters/customerMeterInpStorage';
+import { applyCustomerMetersPressureFromHead } from '../lib/customerMeters/customerMetersPressure';
+import SimulationOptionsPanel from '../components/SimulationOptionsPanel';
+import { SimulationOptions } from '../lib/simulation/simulationOptionsSchema';
+import { defaultOptions } from '../lib/simulation/simulationOptionsDefaults';
+import { parseInpOptions } from '../lib/simulation/inpOptionsParser';
+import { applyOptionsToInp } from '../lib/simulation/inpOptionsWriter';
+import { DIAMETER_RANGES, NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
 import { addLink, addNode, deleteLink, deleteNode, networkToInp, updateLinkAttrs, updateNodeAttrs, updateNodeCoordinates } from '../lib/geoJsonToInp';
 import TimeSlider from '../components/TimeSlider';
 import { networkToGeoJson } from '../lib/inpToGeoJson';
 import { generateAISectorization } from '../lib/aiSectorization';
-import { Layers, Play, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf } from 'lucide-react';
+import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2 } from 'lucide-react';
 import PatternEditor, { DEFAULT_PATTERN } from '../components/PatternEditor';
 import * as turf from '@turf/turf';
-import * as shpwrite from 'shp-write';
 
-type TabKey = 'mapa' | 'gis' | 'inventario' | 'hidraulicos' | 'tabelas' | 'diagnostico' | 'pressao-setor' | 'pressao-inteligente' | 'sensorizacao' | 'perdas' | 'carbono' | 'setores' | 'criticidade' | 'interpretacao';
+type TabKey = 'mapa' | 'gis' | 'modelagem' | 'inventario' | 'hidraulicos' | 'tabelas' | 'diagnostico' | 'pressao-setor' | 'pressao-inteligente' | 'sensorizacao' | 'perdas' | 'carbono' | 'setores' | 'criticidade' | 'interpretacao';
 type IconType = React.ComponentType<{ className?: string }>;
 
 const TABS: Array<{ key: TabKey; label: string; icon: IconType }> = [
   { key: 'mapa', label: 'Mapa', icon: MapIcon },
   { key: 'gis', label: 'GIS', icon: Network },
+  { key: 'modelagem', label: 'Modelagem Hidráulica', icon: Cpu },
   { key: 'inventario', label: 'Inventário', icon: ClipboardList },
   { key: 'hidraulicos', label: 'Indicadores Hidráulicos', icon: Gauge },
   { key: 'tabelas', label: 'Resultados', icon: TableIcon },
@@ -179,6 +192,145 @@ function stableHash(value: string): number {
   return Math.abs(hash);
 }
 
+function formatMapTime(timeSeries: TimeSeriesData | undefined, index: number): string {
+  const seconds = timeSeries?.time?.[index] ?? 0;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function MapToggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+        checked
+          ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-100'
+          : 'border-zinc-800 bg-zinc-950/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+      }`}
+    >
+      <span className="flex items-center gap-2">
+        <Eye className="h-3.5 w-3.5" />
+        {label}
+      </span>
+      <span className={`h-4 w-7 rounded-full p-0.5 ${checked ? 'bg-cyan-500' : 'bg-zinc-700'}`}>
+        <span className={`block h-3 w-3 rounded-full bg-white transition-transform ${checked ? 'translate-x-3' : ''}`} />
+      </span>
+    </button>
+  );
+}
+
+function RangeControl({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  suffix = '',
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+  suffix?: string;
+}) {
+  return (
+    <label className="block rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="text-zinc-300">{label}</span>
+        <span className="font-mono text-[11px] text-cyan-300">{value}{suffix}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-full accent-cyan-500"
+      />
+    </label>
+  );
+}
+
+function LegendLine({ color, label, dashed = false }: { color: string; label: string; dashed?: boolean }) {
+  return (
+    <div className="flex items-center gap-3 text-sm text-zinc-200">
+      <span className={`h-0 w-10 border-t-[3px] ${dashed ? 'border-dashed' : ''}`} style={{ borderColor: color }} />
+      <span className="font-medium">{label}</span>
+    </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <div className="flex items-center gap-3 text-sm text-zinc-200">
+      <span className="h-4 w-4 rounded-full border border-white/50 shadow-sm" style={{ backgroundColor: color }} />
+      <span className="font-medium">{label}</span>
+    </div>
+  );
+}
+
+function hydraulicControlsToEpanet(controls: HydraulicControl[]): string {
+  const active = controls.filter((control) => control.enabled);
+  if (active.length === 0) return '';
+
+  const simple: string[] = [];
+  const rules: string[] = [];
+
+  active.forEach((control) => {
+    const targetType = control.targetType === 'pump' ? 'PUMP' : control.targetType === 'valve' ? 'VALVE' : 'LINK';
+    const status = control.action === 'OPEN' ? 'OPEN' : control.action === 'CLOSED' ? 'CLOSED' : 'ACTIVE';
+    const first = control.conditions[0];
+    if (!first) return;
+
+    if (control.kind === 'simple' && first.variable === 'TIME') {
+      simple.push(`LINK ${control.targetId} ${status} AT TIME ${first.value}`);
+      return;
+    }
+
+    const conditions = control.conditions.map((condition, index) => {
+      const connector = index === 0 ? 'IF' : (condition.logic ?? 'AND');
+      const object = condition.sensorType === 'time' ? 'SYSTEM' : condition.sensorType.toUpperCase();
+      const id = condition.sensorType === 'time' ? 'TIME' : condition.sensorId;
+      return `  ${connector} ${object} ${id} ${condition.variable} ${condition.operator} ${condition.value}`;
+    }).join('\n');
+    const action = control.setting !== undefined && control.action === 'ACTIVE'
+      ? `THEN ${targetType} ${control.targetId} SETTING IS ${control.setting}`
+      : `THEN ${targetType} ${control.targetId} STATUS IS ${status}`;
+    rules.push(`RULE ${control.id}\n${conditions}\n${action}\nPRIORITY ${control.priority}`);
+  });
+
+  return [
+    simple.length ? `[CONTROLS]\n${simple.join('\n')}` : '',
+    rules.length ? `[RULES]\n${rules.join('\n\n')}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function appendHydraulicControlsToInp(inp: string, controls: HydraulicControl[]): string {
+  const block = hydraulicControlsToEpanet(controls);
+  if (!block) return inp;
+  const clean = inp
+    .replace(/\n\s*\[CONTROLS\][\s\S]*?(?=\n\s*\[[A-Z_]+\]|\s*$)/i, '\n')
+    .replace(/\n\s*\[RULES\][\s\S]*?(?=\n\s*\[[A-Z_]+\]|\s*$)/i, '\n');
+  if (/\n\s*\[END\]\s*$/i.test(clean)) {
+    return clean.replace(/\n\s*\[END\]\s*$/i, `\n\n${block}\n\n[END]`);
+  }
+  return `${clean.trimEnd()}\n\n${block}\n`;
+}
+
 function validateNetworkForSimulation(data: NetworkData): string[] {
   const issues: string[] = [];
   const nodeIds = new Set(Object.keys(data.nodes));
@@ -219,11 +371,15 @@ export default function Home() {
   const [simStats, setSimStats] = useState<SimulationStats>({ hasResults: false });
   const [isSimulating, setIsSimulating] = useState(false);
   const [tab, setTab] = useState<TabKey>('mapa');
+  const [modelagemSubtab, setModelagemSubtab] = useState<'controles' | 'calibracao' | 'parametros' | 'consumidores' | 'mapa-gis'>('controles');
+  const [valveInsertType, setValveInsertType] = useState<'PRV' | 'PSV' | 'PBV' | 'FCV' | 'TCV' | 'GPV'>('PRV');
+  const [valveInsertSetting, setValveInsertSetting] = useState<number>(10);
+  const [valveInsertDiameter, setValveInsertDiameter] = useState<number>(100);
   const [nodeColorMode, setNodeColorMode] = useState<NodeColorMode>('pressure');
   const [linkColorMode, setLinkColorMode] = useState<LinkColorMode>('diameter');
   const [sectors, setSectors] = useState<Sector[]>([]);
   const [filteredSectorId, setFilteredSectorId] = useState<string | null>(null);
-  const [valveStatusOverride, setValveStatusOverride] = useState<Record<string, 'Open' | 'Closed'>>({});
+  const [valveStatusOverride, setValveStatusOverride] = useState<Record<string, 'OPEN' | 'CLOSED'>>({});
   const [selectedTimeIndex, setSelectedTimeIndex] = useState(0);
   const [simDurationHours, setSimDurationHours] = useState(24);
   const [consumptionPattern, setConsumptionPattern] = useState<number[]>(DEFAULT_PATTERN);
@@ -232,16 +388,48 @@ export default function Home() {
   const [customerMeters, setCustomerMeters] = useState<CustomerMeter[]>([]);
   const [showCustomerMeters, setShowCustomerMeters] = useState(true);
   const [showCustomerMetersPanel, setShowCustomerMetersPanel] = useState(false);
+  const [mapPanelOpen, setMapPanelOpen] = useState(true);
+  const [mapPanelTab, setMapPanelTab] = useState<'camadas' | 'legendas' | 'simbologia' | 'selecao'>('camadas');
+  const [mapTheme, setMapTheme] = useState<'dark' | 'light'>('dark');
+  const [mapFitRequest, setMapFitRequest] = useState(0);
+  const [mapLabelsVisible, setMapLabelsVisible] = useState(true);
+  const [mapFlowArrowsVisible, setMapFlowArrowsVisible] = useState(true);
+  const [mapLineWidth, setMapLineWidth] = useState(3);
+  const [mapLinkOpacity, setMapLinkOpacity] = useState(0.95);
+  const [mapSymbolScale, setMapSymbolScale] = useState(1);
+  const [mapLayers, setMapLayers] = useState({
+    nodes: true,
+    pipes: true,
+    pumps: true,
+    valves: true,
+    reservoirs: true,
+    tanks: true,
+    customerMeters: true,
+    sensors: true,
+    sectors: false,
+    nodeLabels: true,
+    linkLabels: true,
+    meterLabels: false,
+    flowDirection: true,
+    hydraulicAlerts: true,
+  });
   const [customerMeterDemandM3Day, setCustomerMeterDemandM3Day] = useState(0.67);
   const [customerMeterSpacingMeters, setCustomerMeterSpacingMeters] = useState(100);
   const [selectedCustomerMeter, setSelectedCustomerMeter] = useState<CustomerMeter | null>(null);
+  const [customerMeterTargetCount, setCustomerMeterTargetCount] = useState(0);
   const [baseNodeDemandById, setBaseNodeDemandById] = useState<Record<string, number>>({});
   const [smartSensorRecommendations, setSmartSensorRecommendations] = useState<SmartSensorRecommendation[]>([]);
   const [smartInstalledSensors, setSmartInstalledSensors] = useState<SmartInstalledSensor[]>([]);
   const [selectedSmartSensorId, setSelectedSmartSensorId] = useState<string | null>(null);
   const [telemetrySensors, setTelemetrySensors] = useState<TelemetrySensor[]>([]);
   const [telemetryReadings, setTelemetryReadings] = useState<Record<string, TelemetrySample[]>>({});
+  const [hydraulicControls, setHydraulicControls] = useState<HydraulicControl[]>([]);
   const [showAISectorizationPanel, setShowAISectorizationPanel] = useState(false);
+  const [showModelagemPanel] = useState(false);
+  const [baseSimulationOptions, setBaseSimulationOptions] = useState<SimulationOptions>(defaultOptions());
+  const [editedSimulationOptions, setEditedSimulationOptions] = useState<SimulationOptions>(defaultOptions());
+  const [gisEditMode, setGisEditMode] = useState<import('../lib/useMapState').EditMode>('select');
+  const [activeNodeKind, setActiveNodeKind] = useState<import('../components/GisModelagemPanel').ActiveNodeKind>('junction');
   const [isAISectorizing, setIsAISectorizing] = useState(false);
   const [isLoadingPresetInp, setIsLoadingPresetInp] = useState(false);
   const [aiSectorizationConfig, setAISectorizationConfig] = useState<AISectorizationConfig>(DEFAULT_AI_SECTORIZATION_CONFIG);
@@ -294,6 +482,9 @@ export default function Home() {
       const parsedData = parseInpFile(content);
       const syncedData = syncLinkLengths(parsedData);
       setNetworkData(withSummary(syncedData));
+      // Reseta histórico de undo/redo ao carregar um novo arquivo
+      setNetworkPast([]);
+      setNetworkFuture([]);
       setFileName(name);
       setSelectedElement(null);
       setSelectedCustomerMeter(null);
@@ -303,14 +494,19 @@ export default function Home() {
       setValveStatusOverride(
         Object.fromEntries(
           Object.values(parsedData.links)
-            .filter((link) => link.type === 'valve' && typeof link.status === 'string')
-            .map((link) => [link.id, String(link.status).toLowerCase() === 'closed' ? 'Closed' : 'Open'])
+            .filter((link) => (link.type === 'valve' || link.type === 'pipe') && typeof link.status === 'string')
+            .map((link) => [link.id, String(link.status).toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN'])
         )
       );
       setCustomerMeters(parsedData.customerMeters || []);
       setSmartInstalledSensors(parsedData.smartSensors || []);
       setTelemetrySensors(parsedData.telemetrySensors || []);
       setTelemetryReadings(parsedData.telemetryReadings || {});
+      setHydraulicControls(parsedData.hydraulicControls || []);
+      // Carrega opções de simulação a partir do INP
+      const inpOptions = parseInpOptions(content);
+      setBaseSimulationOptions(inpOptions);
+      setEditedSimulationOptions(inpOptions);
       setSmartSensorRecommendations([]);
       setSelectedSmartSensorId(null);
       setBaseNodeDemandById({});
@@ -346,7 +542,20 @@ export default function Home() {
         return;
       }
 
-      const inpToRun = applyStatusOverrides(networkToInp(networkData), valveStatusOverride);
+      // Remove seções personalizadas [CUSTOMER_METERS] e [CUSTOMER_METER_PRESSURES]
+      // antes de enviar ao motor EPANET (que rejeita cabeçalhos desconhecidos).
+      // Filtra valveStatusOverride para incluir apenas links que ainda existem
+      // no networkData — evita Error 200 do EPANET por referência a links já
+      // deletados (por exemplo, tubos divididos quando uma válvula é inserida).
+      const validStatusOverrides = Object.fromEntries(
+        Object.entries(valveStatusOverride).filter(([id]) => Boolean(networkData.links[id]))
+      );
+      const inpToRun = stripCustomerMeterSections(
+        appendHydraulicControlsToInp(
+          applyStatusOverrides(networkToInp({ ...networkData, hydraulicControls }), validStatusOverrides),
+          hydraulicControls
+        )
+      );
       const response = await fetch('/api/simular', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -424,13 +633,26 @@ export default function Home() {
         return { ...networkData, nodes: newNodes, links: newLinks, timeSeries: result.timeSeries as any };
       })();
 
-      setNetworkData(merged);
+      // Propaga a pressão da junction mais próxima para cada Customer Meter.
+      // Quando a opção `calculateCustomerMetersPressure` estiver ativa, usa
+      // a fórmula precisa: pressure = head - elevation. Caso contrário,
+      // copia diretamente a pressão da junction mais próxima.
+      const useHeadFormula = editedSimulationOptions.dashboard.calculateCustomerMetersPressure;
+      const metersWithPressure = customerMeters.length > 0
+        ? (useHeadFormula
+            ? applyCustomerMetersPressureFromHead(customerMeters, merged)
+            : applyPressuresToAllCustomerMeters(customerMeters, merged))
+        : customerMeters;
+      const mergedWithMeters = { ...merged, customerMeters: metersWithPressure };
+
+      setNetworkData(mergedWithMeters);
+      setCustomerMeters(metersWithPressure);
       setSelectedElement(prev => {
         if (!prev) return prev;
-        return getUpdatedSelectedElement(merged, prev);
+        return getUpdatedSelectedElement(mergedWithMeters, prev);
       });
       setErrorLog(null);
-      setSimStats(computeHydraulicStats(merged, result.ranAt));
+      setSimStats(computeHydraulicStats(mergedWithMeters, result.ranAt));
       // Após simular, automaticamente colorimos por pressão/velocidade se o usuário ainda não escolheu
       setNodeColorMode(prev => prev === 'type' ? 'pressure' : prev);
       setLinkColorMode(prev => prev === 'type' ? 'velocity' : prev);
@@ -508,14 +730,89 @@ export default function Home() {
     return changed ? { ...data, links: newLinks } : data;
   };
 
+  // Histórico para Ctrl+Z / Ctrl+Shift+Z (limite de 50 estados)
+  const HISTORY_MAX = 50;
+  const [networkPast, setNetworkPast] = useState<NetworkData[]>([]);
+  const [networkFuture, setNetworkFuture] = useState<NetworkData[]>([]);
+
   const updateNetwork = (updater: (data: NetworkData) => NetworkData) => {
     setNetworkData(prev => {
       if (!prev) return prev;
       const updated = updater(prev);
-      return withSummary(clearSimulationResults(syncLinkLengths(updated)));
+      const next = withSummary(clearSimulationResults(syncLinkLengths(updated)));
+      if (next === prev) return prev;
+      // Empilha o estado anterior no histórico (limita a HISTORY_MAX)
+      setNetworkPast(past => {
+        const newPast = [...past, prev];
+        return newPast.length > HISTORY_MAX ? newPast.slice(-HISTORY_MAX) : newPast;
+      });
+      setNetworkFuture([]);
+      return next;
     });
     setSimStats({ hasResults: false });
   };
+
+  // Restaura um estado da rede (usado por undo/redo)
+  const restoreNetworkState = useCallback((state: NetworkData) => {
+    setNetworkData(state);
+    setCustomerMeters(state.customerMeters ?? []);
+    setSectors(state.sectors ?? []);
+    setHydraulicControls(state.hydraulicControls ?? []);
+    setSelectedElement(null);
+    setSelectedCustomerMeter(null);
+    setSimStats({ hasResults: false });
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    setNetworkPast(past => {
+      if (past.length === 0) return past;
+      const previous = past[past.length - 1];
+      setNetworkData(current => {
+        if (current) setNetworkFuture(f => [...f, current]);
+        return previous;
+      });
+      restoreNetworkState(previous);
+      return past.slice(0, -1);
+    });
+  }, [restoreNetworkState]);
+
+  const handleRedo = useCallback(() => {
+    setNetworkFuture(future => {
+      if (future.length === 0) return future;
+      const nextState = future[future.length - 1];
+      setNetworkData(current => {
+        if (current) setNetworkPast(p => [...p, current]);
+        return nextState;
+      });
+      restoreNetworkState(nextState);
+      return future.slice(0, -1);
+    });
+  }, [restoreNetworkState]);
+
+  // Listener global de teclado para Ctrl+Z (undo) e Ctrl+Shift+Z / Ctrl+Y (redo)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignora quando o usuário está digitando em campos de texto
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable;
+      if (isEditable) return;
+
+      const isMod = e.ctrlKey || e.metaKey;
+      if (!isMod) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [handleUndo, handleRedo]);
 
   const demandM3DayToLps = useCallback((demandM3Day: number): number => {
     return demandM3Day / 86.4;
@@ -576,8 +873,20 @@ export default function Home() {
       setError('Informe uma demanda de customer meter maior que zero (m3/dia).');
       return;
     }
-    const configuredSpacingMeters = Number.isFinite(customerMeterSpacingMeters)
-      ? Math.max(1, customerMeterSpacingMeters)
+    const configuredTargetCount = Number.isFinite(customerMeterTargetCount)
+      ? Math.max(0, Math.floor(customerMeterTargetCount))
+      : 0;
+    const totalPipeLength = distributionPipes.reduce((sum, pipe) => {
+      const n1 = networkData.nodes[pipe.node1];
+      const n2 = networkData.nodes[pipe.node2];
+      if (!n1?.coordinates || !n2?.coordinates) return sum;
+      return sum + Math.hypot(n2.coordinates.x - n1.coordinates.x, n2.coordinates.y - n1.coordinates.y);
+    }, 0);
+    const spacingBasis = configuredTargetCount > 0 && totalPipeLength > 0
+      ? totalPipeLength / Math.max(1, configuredTargetCount)
+      : customerMeterSpacingMeters;
+    const configuredSpacingMeters = Number.isFinite(spacingBasis)
+      ? Math.max(1, spacingBasis)
       : 0;
     if (configuredSpacingMeters <= 0) {
       setError('Informe um distanciamento maior que zero entre customer meters.');
@@ -598,8 +907,8 @@ export default function Home() {
 
       const nx = -dy / len;
       const ny = dx / len;
-      const side = stableHash(pipe.id) % 2 === 0 ? 1 : -1;
-      const offset = Math.min(Math.max(len * 0.04, 2), 12) * side;
+      // Fileira única, deslocada para um lado só, com distância maior do trecho
+      const baseOffset = Math.min(Math.max(len * 0.18, 14), 36);
       const setorId = sectors.find((sector) => sector.linkIds.includes(pipe.id))?.id ?? '';
       const distances: number[] = [];
 
@@ -618,8 +927,10 @@ export default function Home() {
         const t = Math.max(0, Math.min(1, distanceFromStart / len));
         const touchX = n1.coordinates!.x + dx * t;
         const touchY = n1.coordinates!.y + dy * t;
-        const candidateX = touchX + nx * offset;
-        const candidateY = touchY + ny * offset;
+
+        // Fileira única, sempre do mesmo lado (positivo da normal)
+        const candidateX = touchX + nx * baseOffset;
+        const candidateY = touchY + ny * baseOffset;
 
         const dist1 = Math.hypot(touchX - n1.coordinates!.x, touchY - n1.coordinates!.y);
         const dist2 = Math.hypot(touchX - n2.coordinates!.x, touchY - n2.coordinates!.y);
@@ -646,16 +957,32 @@ export default function Home() {
       return;
     }
 
-    setCustomerMeters(newMeters);
+    const metersToApply = configuredTargetCount > 0 ? newMeters.slice(0, configuredTargetCount) : newMeters;
+
+    // Enriquece cada medidor com a junction mais próxima (busca em toda a rede)
+    // — define elevation, nearestJunctionId e nearestJunctionDistance.
+    const nowIso = new Date().toISOString();
+    const metersEnriched = metersToApply.map(m => {
+      const enriched = enrichCustomerMeterWithNearest(m, networkData);
+      return {
+        ...enriched,
+        pressure: null,
+        createdAt: m.createdAt ?? nowIso,
+        updatedAt: nowIso,
+      };
+    });
+
+    setCustomerMeters(metersEnriched);
     setShowCustomerMeters(true);
     setSelectedCustomerMeter(null);
     setSelectedElement(null);
-    updateNetwork((data) => applyCustomerMeterDemands(data, newMeters, nextBaseDemandById));
+    updateNetwork((data) => ({ ...applyCustomerMeterDemands(data, metersEnriched, nextBaseDemandById), customerMeters: metersEnriched }));
     setError(null);
   }, [
     networkData,
     baseNodeDemandById,
     customerMeterDemandM3Day,
+    customerMeterTargetCount,
     customerMeterSpacingMeters,
     sectors,
     updateNetwork,
@@ -730,14 +1057,42 @@ export default function Home() {
   const handleNodeAdded = (lng: number, lat: number) => {
     if (!networkData) return;
     const [x, y] = networkToGeoJson(networkData).transform.toEpanet(lng, lat);
+    const kind = showModelagemPanel ? activeNodeKind : 'junction';
+    const prefix = kind === 'reservoir' ? 'R' : kind === 'tank' ? 'T' : 'J';
+    const id = nextId(prefix, networkData.nodes);
+    const base = { id, type: kind as import('../types/epanet').ElementType, coordinates: { x, y } };
+    const node = kind === 'reservoir' ? { ...base, head: 0 }
+      : kind === 'tank' ? { ...base, elevation: 0, initLevel: 1, minLevel: 0, maxLevel: 5, diameter: 10 }
+      : { ...base, elevation: 0, demand: 0 };
+    updateNetwork(data => addNode(data, node as import('../types/epanet').NodeElement));
+  };
+
+  // ─── Opções de Simulação ────────────────────────────────────────────────
+  const handleApplySimulationOptions = useCallback((options: SimulationOptions) => {
+    if (!networkData) return;
+    const currentInp = networkData.inpContent ?? '';
+    const newInp = applyOptionsToInp(currentInp, options);
+    setNetworkData(prev => prev ? { ...prev, inpContent: newInp } : prev);
+    setBaseSimulationOptions(options);
+    setEditedSimulationOptions(options);
+    // Sincroniza a duração da simulação com a opção do painel.
+    // Como o INP agora carrega a duração desejada, o frontend passa 0
+    // (não sobrescreve) — mas mantemos simDurationHours em sincronia visual.
+    setSimDurationHours(options.times.durationHours);
+  }, [networkData]);
+
+  const handleRestoreDefaultSimulationOptions = useCallback(() => {
+    setEditedSimulationOptions(defaultOptions());
+  }, []);
+
+  // Cria um nó na posição clicada e retorna o ID gerado.
+  // Usado pelo modo addPipe para criar automaticamente o nó de destino.
+  const handleNodeAddedGetId = (lng: number, lat: number): string => {
+    if (!networkData) return '';
+    const [x, y] = networkToGeoJson(networkData).transform.toEpanet(lng, lat);
     const id = nextId('J', networkData.nodes);
-    updateNetwork(data => addNode(data, {
-      id,
-      type: 'junction',
-      elevation: 0,
-      demand: 0,
-      coordinates: { x, y },
-    }));
+    updateNetwork(data => addNode(data, { id, type: 'junction', elevation: 0, demand: 0, coordinates: { x, y } }));
+    return id;
   };
 
   const handlePipeAdded = (sourceId: string, targetId: string) => {
@@ -872,9 +1227,162 @@ export default function Home() {
     });
   };
 
+  const handleValveInsertedOnPipe = (linkId: string, lng: number, lat: number) => {
+    if (!networkData) return;
+    // Captura a válvula recém-criada para auto-selecionar após o update
+    const ref: { valve: LinkElement | null } = { valve: null };
+    updateNetwork((data) => {
+      const link = data.links[linkId];
+      if (!link || link.type !== 'pipe') return data;
+      const node1 = data.nodes[link.node1];
+      const node2 = data.nodes[link.node2];
+      if (!node1?.coordinates || !node2?.coordinates) return data;
+
+      const [x, y] = networkToGeoJson(data).transform.toEpanet(lng, lat);
+      const ax = node1.coordinates.x;
+      const ay = node1.coordinates.y;
+      const bx = node2.coordinates.x;
+      const by = node2.coordinates.y;
+      const abx = bx - ax;
+      const aby = by - ay;
+      const ab2 = abx * abx + aby * aby;
+      if (ab2 <= 1e-9) return data;
+
+      // projeta o ponto clicado sobre o segmento
+      const apx = x - ax;
+      const apy = y - ay;
+      // mantém a válvula longe das pontas para não criar trechos de comprimento ~0
+      const tRaw = (apx * abx + apy * aby) / ab2;
+      const t = Math.max(0.05, Math.min(0.95, tRaw));
+
+      const totalLen = Math.sqrt(ab2);
+      const originalLen = typeof link.length === 'number' ? link.length : totalLen;
+
+      // ponto médio da inserção e dois nós muito próximos para os terminais da válvula
+      const midX = ax + abx * t;
+      const midY = ay + aby * t;
+      const dirX = abx / totalLen;
+      const dirY = aby / totalLen;
+      // espaçamento entre as 2 junções da válvula (1% do comprimento, mínimo
+      // visível para que o símbolo da válvula apareça claramente entre elas)
+      const eps = totalLen * 0.01;
+      const n1X = midX - dirX * eps;
+      const n1Y = midY - dirY * eps;
+      const n2X = midX + dirX * eps;
+      const n2Y = midY + dirY * eps;
+
+      const elev = ((typeof node1.elevation === 'number' ? node1.elevation : 0) +
+        (typeof node2.elevation === 'number' ? node2.elevation : 0)) / 2;
+
+      const valveNode1Id = nextId('JV', data.nodes);
+      let nextNodes: Record<string, NodeElement> = {
+        ...data.nodes,
+        [valveNode1Id]: {
+          id: valveNode1Id,
+          type: 'junction',
+          elevation: elev,
+          demand: 0,
+          coordinates: { x: n1X, y: n1Y },
+        },
+      };
+      const valveNode2Id = nextId('JV', nextNodes);
+      nextNodes = {
+        ...nextNodes,
+        [valveNode2Id]: {
+          id: valveNode2Id,
+          type: 'junction',
+          elevation: elev,
+          demand: 0,
+          coordinates: { x: n2X, y: n2Y },
+        },
+      };
+
+      // remove o tubo original e cria 2 trechos + 1 válvula no meio
+      const linksWithoutOriginal = { ...data.links };
+      delete linksWithoutOriginal[linkId];
+
+      const len1 = Math.max(1, originalLen * t - 0.01);
+      const len2 = Math.max(1, originalLen * (1 - t) - 0.01);
+
+      const pipeAId = nextId('P', linksWithoutOriginal);
+      const linksA = {
+        ...linksWithoutOriginal,
+        [pipeAId]: {
+          ...link,
+          id: pipeAId,
+          node1: link.node1,
+          node2: valveNode1Id,
+          length: Number(len1.toFixed(2)),
+        } as LinkElement,
+      };
+
+      const pipeBId = nextId('P', linksA);
+      const linksAB = {
+        ...linksA,
+        [pipeBId]: {
+          ...link,
+          id: pipeBId,
+          node1: valveNode2Id,
+          node2: link.node2,
+          length: Number(len2.toFixed(2)),
+        } as LinkElement,
+      };
+
+      const valveId = nextId('V', linksAB);
+      const diameter = typeof link.diameter === 'number' && link.diameter > 0
+        ? link.diameter
+        : valveInsertDiameter;
+      const newValve: LinkElement = {
+        id: valveId,
+        type: 'valve',
+        node1: valveNode1Id,
+        node2: valveNode2Id,
+        diameter,
+        valveType: valveInsertType,
+        setting: valveInsertSetting,
+        minorLoss: 0,
+        status: 'Open',
+      };
+      const finalLinks: Record<string, LinkElement> = {
+        ...linksAB,
+        [valveId]: newValve,
+      };
+
+      // Captura a válvula para auto-seleção após o update do estado
+      ref.valve = newValve;
+
+      return { ...data, nodes: nextNodes, links: finalLinks };
+    });
+
+    // Remove qualquer status override pendente do tubo original — ele deixou
+    // de existir após o split. Evita Error 200 do EPANET ao referenciar link
+    // inexistente em [STATUS].
+    setValveStatusOverride(prev => {
+      if (!(linkId in prev)) return prev;
+      const next = { ...prev };
+      delete next[linkId];
+      return next;
+    });
+
+    // Auto-seleciona a válvula recém-inserida (em vez da junção JV) para que
+    // o usuário veja o elemento de válvula no painel de seleção.
+    if (ref.valve) {
+      setSelectedElement(ref.valve);
+    }
+  };
+
   const handleElementDeleted = (id: string, kind: 'node' | 'link') => {
     updateNetwork(data => kind === 'node' ? deleteNode(data, id) : deleteLink(data, id));
     setSelectedElement(null);
+    // Remove o status override do link deletado para não referenciar em [STATUS]
+    if (kind === 'link') {
+      setValveStatusOverride(prev => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    }
   };
 
   const handleSectorCreated = (nodeIds: string[], linkIds: string[], points?: number[][]) => {
@@ -1076,23 +1584,28 @@ export default function Home() {
     setActiveAISectorizationScenarioId((prev) => (prev === scenarioId ? null : prev));
   }, []);
 
-  const handleExportAISectorsToShp = useCallback(() => {
-    const aiSectors = aiSectorsInView.filter((sector) => !!sector.geometry);
-    if (aiSectors.length === 0) {
-      setError('Não há polígonos da Setorização IA para exportar.');
+  const handleExportSectorsToShp = useCallback(async () => {
+    const sectorsToExport = sectors.filter((sector) => !!sector.geometry);
+    if (sectorsToExport.length === 0) {
+      setError('Não há polígonos de setorização para exportar.');
       return;
     }
 
     try {
-      const features = aiSectors.map((sector) => {
+      // Dynamic import to avoid SSR/bundling issues
+      const shpwrite = await import('shp-write');
+
+      const features = sectorsToExport.map((sector) => {
         const geometry = sector.geometry!;
-        const areaM2 = sector.aiMeta?.areaM2 ?? turf.area(turf.polygon(geometry.coordinates));
+        // turf.area handles Polygon and MultiPolygon
+        const areaM2 = sector.aiMeta?.areaM2 ?? turf.area(geometry as any);
         return {
           type: 'Feature' as const,
+          id: sector.id,
           geometry,
           properties: {
-            SETOR_ID: sector.id,
-            NOME: sector.nome,
+            ID: sector.id.slice(0, 10),
+            NOME: sector.nome.slice(0, 80),
             AREA_M2: Number(areaM2.toFixed(2)),
             EXT_REDE: Number((sector.aiMeta?.extensaoRedeM ?? 0).toFixed(2)),
             NUM_NOS: sector.aiMeta?.numeroNos ?? sector.nodeIds.length,
@@ -1102,12 +1615,9 @@ export default function Home() {
             P_MAX: Number((sector.aiMeta?.pressaoMaxima ?? 0).toFixed(2)),
             DEM_EST: Number((sector.aiMeta?.demandaEstimada ?? 0).toFixed(4)),
             VAZ_TOT: Number((sector.aiMeta?.vazaoTotalAssociada ?? 0).toFixed(4)),
-            N_LIG: sector.aiMeta?.numeroLigacoes ?? 0,
-            P_MACRO: (sector.aiMeta?.pontosMacroMedicao ?? []).join(','),
-            P_VALV: (sector.aiMeta?.pontosValvulasIsolamento ?? []).join(','),
-            IQ_SETOR: sector.aiMeta?.indiceQualidadeSetorizacao ?? 0,
-            OBS_IA: (sector.aiMeta?.observacoesIA ?? '').slice(0, 250),
             RISCO: sector.aiMeta?.riscoPerdas ?? '',
+            IQ: sector.aiMeta?.indiceQualidadeSetorizacao ?? 0,
+            OBS: (sector.aiMeta?.observacoesIA ?? sector.observacoes ?? '').slice(0, 250),
           },
         };
       });
@@ -1115,15 +1625,19 @@ export default function Home() {
       (shpwrite as any).download(
         { type: 'FeatureCollection', features },
         {
-          folder: 'setorizacao_ia_shp',
-          types: { polygon: 'setorizacao_ia' },
+          folder: 'setores_shp',
+          types: { 
+            polygon: 'setores',
+            multipolygon: 'setores'
+          },
+          prj: 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]'
         }
       );
       setError(null);
     } catch (err) {
-      setError(`Erro ao exportar Setorização IA em SHP: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Erro ao exportar SHP: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [aiSectorsInView]);
+  }, [sectors]);
 
   const handleSaveNode = (id: string, patch: Partial<NodeElement>) => {
     updateNetwork(data => updateNodeAttrs(data, id, patch));
@@ -1131,12 +1645,35 @@ export default function Home() {
   };
 
   const handleSaveLink = (id: string, patch: Partial<LinkElement>) => {
-    if (networkData?.links[id]?.type === 'valve' && typeof patch.status === 'string') {
-      const normalizedStatus = patch.status.toLowerCase() === 'closed' ? 'Closed' : 'Open';
+    const linkType = networkData?.links[id]?.type;
+    if ((linkType === 'valve' || linkType === 'pipe') && typeof patch.status === 'string') {
+      const normalizedStatus = patch.status.toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
       setValveStatusOverride(prev => ({ ...prev, [id]: normalizedStatus }));
     }
     updateNetwork(data => updateLinkAttrs(data, id, patch));
     setSelectedElement(prev => prev?.id === id && !isNodeElement(prev) ? clearLinkResults({ ...prev, ...patch } as LinkElement) : prev);
+  };
+
+  const handleSaveCustomerMeter = (id: string, patch: Partial<CustomerMeter>) => {
+    // Mantém demanda e volume mensal coerentes (volume = demanda * 30).
+    let normalizedPatch: Partial<CustomerMeter> = { ...patch, updatedAt: new Date().toISOString() };
+    if (typeof patch.demandaBaseCalculada === 'number') {
+      normalizedPatch.volumeMensalM3 = Number((patch.demandaBaseCalculada * 30).toFixed(6));
+    } else if (typeof patch.volumeMensalM3 === 'number') {
+      normalizedPatch.demandaBaseCalculada = Number((patch.volumeMensalM3 / 30).toFixed(6));
+    }
+
+    setCustomerMeters(prev => {
+      const next = prev.map(m => m.id === id ? { ...m, ...normalizedPatch } as CustomerMeter : m);
+      // Se a demanda mudou, redistribui as demandas nos nós da rede.
+      const demandChanged = typeof patch.demandaBaseCalculada === 'number' || typeof patch.volumeMensalM3 === 'number';
+      if (demandChanged && Object.keys(baseNodeDemandById).length > 0) {
+        updateNetwork(data => ({ ...applyCustomerMeterDemands(data, next, baseNodeDemandById), customerMeters: next }));
+      } else {
+        updateNetwork(data => ({ ...data, customerMeters: next }));
+      }
+      return next;
+    });
   };
 
   const downloadRegeneratedInp = () => {
@@ -1149,10 +1686,11 @@ export default function Home() {
         smartSensors: smartInstalledSensors,
         telemetrySensors,
         telemetryReadings,
+        hydraulicControls,
       },
       { includeMetadata: true }
     );
-    const content = applyStatusOverrides(regenerated, valveStatusOverride);
+    const content = appendHydraulicControlsToInp(applyStatusOverrides(regenerated, valveStatusOverride), hydraulicControls);
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1162,12 +1700,13 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const exportMetersToShp = () => {
+  const exportMetersToShp = async () => {
     if (!networkData || customerMeters.length === 0) {
       setError('Crie Customer Meters primeiro para exportar.');
       return;
     }
     try {
+      const shpwrite = await import('shp-write');
       const { transform } = networkToGeoJson(networkData);
       const features = customerMeters.map(m => {
         const [lng, lat] = transform.toLngLat(m.x, m.y);
@@ -1201,6 +1740,55 @@ export default function Home() {
       });
     } catch (err) {
       setError('Erro ao exportar SHP: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
+  const exportMapImage = async () => {
+    const mapElement = document.querySelector('.react-flow') as HTMLElement | null;
+    if (!mapElement) {
+      setError('Mapa não encontrado para exportação.');
+      return;
+    }
+
+    try {
+      const rect = mapElement.getBoundingClientRect();
+      const cloned = mapElement.cloneNode(true) as HTMLElement;
+      cloned.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+      cloned.style.width = `${rect.width}px`;
+      cloned.style.height = `${rect.height}px`;
+
+      const serialized = new XMLSerializer().serializeToString(cloned);
+      const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${rect.width}" height="${rect.height}">
+          <foreignObject width="100%" height="100%">${serialized}</foreignObject>
+        </svg>
+      `;
+      const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(rect.width));
+        canvas.height = Math.max(1, Math.round(rect.height));
+        const context = canvas.getContext('2d');
+        if (!context) {
+          URL.revokeObjectURL(url);
+          setError('Não foi possível criar a imagem do mapa.');
+          return;
+        }
+        context.drawImage(image, 0, 0);
+        URL.revokeObjectURL(url);
+        const anchor = document.createElement('a');
+        anchor.href = canvas.toDataURL('image/png');
+        anchor.download = `mapa-hidraulico-${new Date().toISOString().slice(0, 10)}.png`;
+        anchor.click();
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        setError('Erro ao renderizar a imagem do mapa.');
+      };
+      image.src = url;
+    } catch (err) {
+      setError(`Erro ao exportar imagem do mapa: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -1269,6 +1857,7 @@ export default function Home() {
                     setSelectedSmartSensorId(null);
                     setTelemetrySensors([]);
                     setTelemetryReadings({});
+                    setHydraulicControls([]);
                     setBaseNodeDemandById({});
                     setShowCustomerMetersPanel(false);
                     setShowAISectorizationPanel(false);
@@ -1285,6 +1874,26 @@ export default function Home() {
               )}
               
               <div className="h-8 w-px bg-zinc-800 mx-1 hidden md:block" />
+
+              {/* Undo / Redo */}
+              <div className="flex items-center gap-0.5 rounded-xl border border-zinc-800 bg-zinc-950 p-0.5">
+                <button
+                  onClick={handleUndo}
+                  disabled={networkPast.length === 0}
+                  className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-cyan-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title={`Desfazer (Ctrl+Z)${networkPast.length > 0 ? ` — ${networkPast.length} ação(ões)` : ''}`}
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={handleRedo}
+                  disabled={networkFuture.length === 0}
+                  className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-cyan-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title={`Refazer (Ctrl+Shift+Z)${networkFuture.length > 0 ? ` — ${networkFuture.length} ação(ões)` : ''}`}
+                >
+                  <Redo2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
               <button
                 onClick={downloadRegeneratedInp}
@@ -1423,57 +2032,251 @@ export default function Home() {
             <div className="flex-1 flex gap-3 min-h-0">
               <div className="flex-1 min-w-0 flex flex-col">
                 {tab === 'mapa' && (
-                  <>
-                    <div className="flex items-center gap-3 mb-2 text-xs flex-wrap">
-                      <span className="text-zinc-600 dark:text-zinc-300">Legenda dos nós:</span>
-                      {(['type', 'pressure'] as NodeColorMode[]).map(m => (
-                        <button
-                          key={m}
-                          onClick={() => setNodeColorMode(m)}
-                          className={`px-2 py-1 rounded ${nodeColorMode === m ? 'bg-blue-600 text-white' : 'bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700'}`}
-                        >
-                          {m === 'type' ? 'Tipo' : 'Pressão'}
-                        </button>
-                      ))}
-                      <span className="text-zinc-600 dark:text-zinc-300 ml-3">Exibir nos trechos:</span>
-                      {(['diameter', 'flow', 'velocity'] as LinkColorMode[]).map(m => (
-                        <button
-                          key={m}
-                          onClick={() => setLinkColorMode(m)}
-                          className={`px-2 py-1 rounded ${linkColorMode === m ? 'bg-blue-600 text-white' : 'bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700'}`}
-                        >
-                          {m === 'diameter' ? 'Diâmetro' : m === 'flow' ? 'Vazão' : 'Velocidade'}
-                        </button>
-                      ))}
+                  <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 shadow-xl">
+                    {/* Toolbar única e compacta (substitui as duas anteriores) */}
+                    <div className="flex flex-shrink-0 flex-wrap items-center gap-1.5 border-b border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 px-2 py-1.5">
+
+                      {/* Toggle do painel lateral */}
                       <button
-                        onClick={() => {
-                          setShowCustomerMetersPanel(true);
-                          setSelectedCustomerMeter(null);
-                        }}
-                        className="ml-3 px-2 py-1 rounded border border-amber-500 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30"
+                        onClick={() => setMapPanelOpen((prev) => !prev)}
+                        className={`inline-flex items-center justify-center rounded-md p-1.5 transition-colors ${mapPanelOpen ? 'bg-cyan-500/15 text-cyan-300' : 'text-zinc-400 hover:bg-zinc-800/80 hover:text-cyan-300'}`}
+                        title="Camadas e Legendas"
                       >
-                        Customer Meters
+                        {mapPanelOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
                       </button>
+
+                      <span className="h-5 w-px bg-zinc-800" />
+
+                      {/* Player de tempo */}
+                      <div className="flex min-w-[240px] flex-1 max-w-[420px] items-center gap-2 rounded-md border border-zinc-800/70 bg-zinc-950/60 px-2 py-1">
+                        <button className="inline-flex items-center justify-center rounded-full bg-cyan-500/20 p-1 text-cyan-300 transition-colors hover:bg-cyan-500/30" title="Play/Pause da simulação">
+                          {isSimulating ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                        </button>
+                        <span className="w-10 font-mono text-[11px] font-semibold text-zinc-100">{formatMapTime(networkData.timeSeries, selectedTimeIndex)}</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={(networkData.timeSeries?.time.length ?? 1) - 1}
+                          value={selectedTimeIndex}
+                          onChange={(event) => applyTimestep(Number(event.target.value))}
+                          disabled={!networkData.timeSeries || networkData.timeSeries.time.length <= 1}
+                          className="min-w-[100px] flex-1 accent-cyan-500 disabled:opacity-30"
+                        />
+                        <button onClick={() => setShowPatternEditor(true)} className="hidden items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-zinc-400 transition-colors hover:bg-emerald-500/10 hover:text-emerald-300 sm:inline-flex" title="Editor de padrão de consumo">
+                          <TrendingDown className="h-3 w-3" />
+                          Padrão
+                        </button>
+                      </div>
+
+                      <span className="h-5 w-px bg-zinc-800" />
+
+                      {/* Modo de cor (selects compactos) */}
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={nodeColorMode}
+                          onChange={(event) => setNodeColorMode(event.target.value as NodeColorMode)}
+                          className="cursor-pointer rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-200 outline-none transition-colors hover:border-cyan-500/50 focus:border-cyan-500"
+                          title="Cor dos nós"
+                        >
+                          <option value="pressure">◯ Pressão</option>
+                          <option value="type">◯ Tipo</option>
+                        </select>
+                        <select
+                          value={linkColorMode}
+                          onChange={(event) => setLinkColorMode(event.target.value as LinkColorMode)}
+                          className="cursor-pointer rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-200 outline-none transition-colors hover:border-cyan-500/50 focus:border-cyan-500"
+                          title="Cor dos tubos"
+                        >
+                          <option value="diameter">━ Diâmetro</option>
+                          <option value="flow">━ Vazão</option>
+                          <option value="velocity">━ Velocidade</option>
+                          <option value="type">━ Tipo</option>
+                        </select>
+                      </div>
+
+                      <span className="h-5 w-px bg-zinc-800" />
+
+                      {/* Chips de visibilidade */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setMapLabelsVisible((prev) => !prev)}
+                          className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${mapLabelsVisible ? 'bg-cyan-500/15 text-cyan-300' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'}`}
+                          title="Mostrar/ocultar rótulos"
+                        >
+                          Rótulos
+                        </button>
+                        <button
+                          onClick={() => setMapFlowArrowsVisible((prev) => !prev)}
+                          className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${mapFlowArrowsVisible ? 'bg-cyan-500/15 text-cyan-300' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'}`}
+                          title="Mostrar setas de fluxo"
+                        >
+                          Fluxo
+                        </button>
+                        <button
+                          onClick={() => {
+                            setMapLayers((prev) => ({ ...prev, customerMeters: !prev.customerMeters }));
+                            setShowCustomerMeters((prev) => !prev);
+                          }}
+                          className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${mapLayers.customerMeters ? 'bg-amber-400/15 text-amber-200' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'}`}
+                          title="Mostrar customer meters"
+                        >
+                          Medidores
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowCustomerMetersPanel(true);
+                            setSelectedElement(null);
+                            setSelectedCustomerMeter(null);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20 hover:border-amber-400"
+                          title="Gerar consumidores ao longo dos tubos usando os parâmetros atuais de Customer Meters"
+                        >
+                          <MapPin className="w-3 h-3" />
+                          Gerar consumidores
+                        </button>
+                      </div>
+
+                      {/* Filtro por setor (alinhado à direita) */}
                       {sectors.length > 0 && (
-                        <div className="flex items-center gap-2 ml-4">
-                          <span className="text-zinc-500">Filtrar por Setor:</span>
-                          <select
-                            value={filteredSectorId || ''}
-                            onChange={(e) => setFilteredSectorId(e.target.value || null)}
-                            className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-[11px] rounded px-2 py-1 outline-none focus:border-red-500"
-                          >
-                            <option value="">Nenhum (Todos)</option>
-                            {sectors.map(s => (
-                              <option key={s.id} value={s.id}>{s.nome}</option>
-                            ))}
-                          </select>
-                          {filteredSectorId && (
-                            <button onClick={() => setFilteredSectorId(null)} className="text-red-500 hover:text-red-400 text-xs">Limpar</button>
-                          )}
-                        </div>
+                        <select
+                          value={filteredSectorId || ''}
+                          onChange={(e) => setFilteredSectorId(e.target.value || null)}
+                          className="ml-auto cursor-pointer rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-200 outline-none transition-colors hover:border-cyan-500/50 focus:border-cyan-500"
+                          title="Filtrar por setor"
+                        >
+                          <option value="">Todos os setores</option>
+                          {sectors.map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}
+                        </select>
                       )}
+
+                      {sectors.length === 0 && <span className="ml-auto" />}
+                      <span className="h-5 w-px bg-zinc-800" />
+
+                      {/* Botões de ação rápida (agrupados) */}
+                      <div className="flex items-center gap-0.5 rounded-md border border-zinc-800/70 bg-zinc-950/60 p-0.5">
+                        <button onClick={() => setMapFitRequest((prev) => prev + 1)} className="rounded p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-cyan-300" title="Ajustar à rede"><Maximize2 className="h-3.5 w-3.5" /></button>
+                        <button onClick={() => setMapFitRequest((prev) => prev + 1)} className="rounded p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-cyan-300" title="Centralizar mapa"><LocateFixed className="h-3.5 w-3.5" /></button>
+                        <button onClick={() => { setSelectedElement(null); setSelectedCustomerMeter(null); }} className="rounded p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-red-300" title="Limpar seleção"><XCircle className="h-3.5 w-3.5" /></button>
+                        <button onClick={exportMapImage} className="rounded p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-cyan-300" title="Exportar imagem do mapa"><Camera className="h-3.5 w-3.5" /></button>
+                        <button onClick={() => setMapTheme((prev) => prev === 'dark' ? 'light' : 'dark')} className="rounded p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800/80 hover:text-amber-300" title="Modo claro/escuro">
+                          {mapTheme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex-1 min-h-0">
+
+                    <div className="flex min-h-0 flex-1">
+                      {mapPanelOpen && (
+                        <aside className="hidden w-80 flex-shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/95 lg:flex">
+                          <div className="border-b border-zinc-800 p-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="text-sm font-semibold text-zinc-100">Camadas e Legendas</div>
+                                <div className="text-[11px] text-zinc-500">Controle técnico da visualização</div>
+                              </div>
+                              <Layers className="h-4 w-4 text-cyan-300" />
+                            </div>
+                            <div className="mt-3 grid grid-cols-4 gap-1">
+                              {(['camadas', 'legendas', 'simbologia', 'selecao'] as const).map((panelTab) => (
+                                <button key={panelTab} onClick={() => setMapPanelTab(panelTab)} className={`rounded-md px-2 py-1.5 text-[11px] capitalize ${mapPanelTab === panelTab ? 'bg-cyan-500 text-zinc-950' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100'}`}>
+                                  {panelTab}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex-1 overflow-y-auto p-3">
+                            {mapPanelTab === 'camadas' && (
+                              <div className="space-y-2">
+                                <MapToggle label="Nós" checked={mapLayers.nodes} onChange={() => setMapLayers((p) => ({ ...p, nodes: !p.nodes }))} />
+                                <MapToggle label="Tubos" checked={mapLayers.pipes} onChange={() => setMapLayers((p) => ({ ...p, pipes: !p.pipes }))} />
+                                <MapToggle label="Bombas" checked={mapLayers.pumps} onChange={() => setMapLayers((p) => ({ ...p, pumps: !p.pumps }))} />
+                                <MapToggle label="Válvulas" checked={mapLayers.valves} onChange={() => setMapLayers((p) => ({ ...p, valves: !p.valves }))} />
+                                <MapToggle label="Reservatórios" checked={mapLayers.reservoirs} onChange={() => setMapLayers((p) => ({ ...p, reservoirs: !p.reservoirs }))} />
+                                <MapToggle label="Tanques" checked={mapLayers.tanks} onChange={() => setMapLayers((p) => ({ ...p, tanks: !p.tanks }))} />
+                                <MapToggle label="Customer meters" checked={mapLayers.customerMeters} onChange={() => { setMapLayers((p) => ({ ...p, customerMeters: !p.customerMeters })); setShowCustomerMeters((prev) => !prev); }} />
+                                <MapToggle label="Sensores" checked={mapLayers.sensors} onChange={() => setMapLayers((p) => ({ ...p, sensors: !p.sensors }))} />
+                                <MapToggle label="Setores" checked={mapLayers.sectors} onChange={() => setMapLayers((p) => ({ ...p, sectors: !p.sectors }))} />
+                                <MapToggle label="Rótulos dos nós" checked={mapLayers.nodeLabels} onChange={() => setMapLayers((p) => ({ ...p, nodeLabels: !p.nodeLabels }))} />
+                                <MapToggle label="Rótulos dos trechos" checked={mapLayers.linkLabels} onChange={() => setMapLayers((p) => ({ ...p, linkLabels: !p.linkLabels }))} />
+                                <MapToggle label="Rótulos dos medidores" checked={mapLayers.meterLabels} onChange={() => setMapLayers((p) => ({ ...p, meterLabels: !p.meterLabels }))} />
+                                <MapToggle label="Fluxo / direção" checked={mapLayers.flowDirection} onChange={() => setMapLayers((p) => ({ ...p, flowDirection: !p.flowDirection }))} />
+                                <MapToggle label="Alertas hidráulicos" checked={mapLayers.hydraulicAlerts} onChange={() => setMapLayers((p) => ({ ...p, hydraulicAlerts: !p.hydraulicAlerts }))} />
+                                <RangeControl label="Espessura dos tubos" value={mapLineWidth} min={1} max={7} step={1} onChange={setMapLineWidth} />
+                                <RangeControl label="Opacidade dos tubos" value={mapLinkOpacity} min={0.2} max={1} step={0.05} onChange={setMapLinkOpacity} />
+                                <RangeControl label="Tamanho dos símbolos" value={mapSymbolScale} min={0.7} max={1.6} step={0.1} onChange={setMapSymbolScale} />
+                              </div>
+                            )}
+                            {mapPanelTab === 'legendas' && (
+                              <div className="space-y-4">
+                                <section className="rounded-lg border border-zinc-800 bg-black/40 p-3">
+                                  <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase text-zinc-400">Nós por pressão <ChevronDown className="h-3 w-3" /></div>
+                                  <div className="space-y-1.5">{PRESSURE_RANGES.map((r) => <LegendDot key={r.label} color={r.color} label={r.label} />)}</div>
+                                </section>
+                                <section className="rounded-lg border border-zinc-800 bg-black/40 p-3">
+                                  <div className="mb-2 text-xs font-semibold uppercase text-zinc-400">Tubos por diâmetro</div>
+                                  <div className="space-y-1.5">{DIAMETER_RANGES.map((r) => <LegendLine key={r.value} color={r.color} label={r.label} />)}<LegendLine color="#94a3b8" label="Outros" /></div>
+                                </section>
+                                <section className="rounded-lg border border-zinc-800 bg-black/40 p-3">
+                                  <div className="mb-2 text-xs font-semibold uppercase text-zinc-400">Tubos por vazão e velocidade</div>
+                                  <div className="space-y-1.5">
+                                    <LegendLine color="#0ea5e9" label="Vazão baixa" />
+                                    <LegendLine color="#22c55e" label="Vazão média" />
+                                    <LegendLine color="#dc2626" label="Vazão alta" />
+                                    <LegendLine color="#f97316" label="Fluxo reverso" dashed />
+                                    <LegendLine color="#facc15" label="Velocidade baixa" />
+                                    <LegendLine color="#22c55e" label="Faixa adequada" />
+                                    <LegendLine color="#dc2626" label="Velocidade elevada" />
+                                  </div>
+                                </section>
+                                <section className="rounded-lg border border-zinc-800 bg-black/40 p-3">
+                                  <div className="mb-2 text-xs font-semibold uppercase text-zinc-400">Elementos especiais</div>
+                                  <div className="space-y-1.5">
+                                    <LegendLine color="#22c55e" label="Bomba" />
+                                    <LegendLine color="#f97316" label="Válvula" dashed />
+                                    <LegendDot color="#6366f1" label="Reservatório" />
+                                    <LegendDot color="#06b6d4" label="Tanque" />
+                                    <LegendDot color="#f59e0b" label="Customer meter" />
+                                    <LegendDot color="#38bdf8" label="Sensor de pressão/vazão" />
+                                    <LegendDot color="#ef4444" label="Ponto crítico" />
+                                  </div>
+                                </section>
+                              </div>
+                            )}
+                            {mapPanelTab === 'simbologia' && (
+                              <div className="space-y-3 text-sm text-zinc-300">
+                                <RangeControl label="Tamanho do nó" value={mapSymbolScale} min={0.7} max={1.6} step={0.1} onChange={setMapSymbolScale} />
+                                <RangeControl label="Espessura proporcional dos tubos" value={mapLineWidth} min={1} max={7} step={1} onChange={setMapLineWidth} />
+                                <MapToggle label="Borda em nós e alertas" checked={mapLayers.hydraulicAlerts} onChange={() => setMapLayers((p) => ({ ...p, hydraulicAlerts: !p.hydraulicAlerts }))} />
+                                <MapToggle label="Linha animada no sentido do fluxo" checked={mapFlowArrowsVisible} onChange={() => setMapFlowArrowsVisible((prev) => !prev)} />
+                                <MapToggle label="Clusterização inteligente de medidores" checked={true} onChange={() => undefined} />
+                                <button onClick={() => { setShowCustomerMetersPanel(true); setSelectedCustomerMeter(null); }} className="w-full rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-left text-xs font-semibold text-amber-200 hover:bg-amber-500/20">
+                                  Configurar Customer Meters
+                                </button>
+                              </div>
+                            )}
+                            {mapPanelTab === 'selecao' && (
+                              <div className="space-y-3 rounded-lg border border-zinc-800 bg-black/40 p-3 text-sm text-zinc-300">
+                                <div className="flex items-center gap-2 text-xs font-semibold uppercase text-zinc-400"><Info className="h-3.5 w-3.5" /> Seleção atual</div>
+                                {selectedElement ? (
+                                  <>
+                                    <div className="text-lg font-semibold text-zinc-100">{selectedElement.id}</div>
+                                    <div className="text-xs text-zinc-500">{selectedElement.type}</div>
+                                  </>
+                                ) : selectedCustomerMeter ? (
+                                  <>
+                                    <div className="text-lg font-semibold text-zinc-100">{selectedCustomerMeter.id}</div>
+                                    <div className="text-xs text-zinc-500">Customer meter</div>
+                                  </>
+                                ) : (
+                                  <div className="text-xs text-zinc-500">Clique em um nó, tubo ou medidor para inspecionar.</div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </aside>
+                      )}
+
+                      <div className="relative min-w-0 flex-1">
+                    <div className="h-full min-h-0">
                       <NetworkViewer
                         data={networkData}
                         onElementClick={handleElementSelected}
@@ -1484,10 +2287,25 @@ export default function Home() {
                         highlightColor={filteredSector?.cor}
                         onSectorCreated={handleSectorCreated}
                         customerMeters={customerMeters}
-                        showCustomerMeters={showCustomerMeters}
+                        showCustomerMeters={showCustomerMeters && mapLayers.customerMeters}
+                        mapTheme={mapTheme}
+                        showNodes={mapLayers.nodes}
+                        showLinks={mapLayers.pipes}
+                        showReservoirs={mapLayers.reservoirs}
+                        showTanks={mapLayers.tanks}
+                        showPumps={mapLayers.pumps}
+                        showValves={mapLayers.valves}
+                        showLabels={mapLabelsVisible && (mapLayers.nodeLabels || mapLayers.linkLabels || mapLayers.meterLabels)}
+                        showFlowArrows={mapFlowArrowsVisible && mapLayers.flowDirection}
+                        baseLineWidth={mapLineWidth}
+                        linkOpacity={mapLinkOpacity}
+                        symbolScale={mapSymbolScale}
+                        fitRequest={mapFitRequest}
                       />
                     </div>
-                  </>
+                  </div>
+                </div>
+              </div>
                 )}
 
                 {tab === 'tabelas' && (
@@ -1538,7 +2356,7 @@ export default function Home() {
 
                       <button
                         onClick={() => setShowAISectorizationPanel((prev) => !prev)}
-                        className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors ${
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors ${
                           showAISectorizationPanel
                             ? 'bg-blue-500/20 text-blue-300 border-blue-500/50'
                             : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:border-zinc-600'
@@ -1565,6 +2383,7 @@ export default function Home() {
                         onElementClick={setSelectedElement}
                         onNodeMoved={handleNodeMoved}
                         onNodeAdded={handleNodeAdded}
+                        onNodeAddedGetId={handleNodeAddedGetId}
                         onPipeAdded={handlePipeAdded}
                         onPipeConnectedToLink={handlePipeConnectedToLink}
                         onElementDeleted={handleElementDeleted}
@@ -1582,7 +2401,165 @@ export default function Home() {
                         selectedSmartSensorId={selectedSmartSensorId}
                         onAddSmartSensor={handleAddSmartSensor}
                         onSmartSensorClick={handleSmartSensorMapClick}
+                        editModeOverride={showModelagemPanel ? gisEditMode : undefined}
+                        onEditModeChange={showModelagemPanel ? setGisEditMode : undefined}
                       />
+                    </div>
+                  </div>
+                )}
+
+                {tab === 'modelagem' && (
+                  <div className="h-full min-h-0 flex flex-col rounded-xl border border-zinc-800 bg-black overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-950 px-4 py-3">
+                      <div>
+                        <div className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
+                          <Cpu className="w-4 h-4 text-cyan-300" />
+                          Modelagem Hidráulica
+                        </div>
+                        <div className="text-xs text-zinc-500">Configuração operacional, calibração e parâmetros avançados.</div>
+                      </div>
+                      <div className="flex gap-1 rounded-lg border border-zinc-800 bg-black p-1">
+                        {[
+                          ['controles', 'Controles'],
+                          ['mapa-gis', 'Mapa GIS'],
+                          ['consumidores', 'Consumidores'],
+                          ['calibracao', 'Calibração'],
+                          ['parametros', 'Parâmetros'],
+                        ].map(([key, label]) => (
+                          <button
+                            key={key}
+                            onClick={() => setModelagemSubtab(key as typeof modelagemSubtab)}
+                            className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                              modelagemSubtab === key ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-100'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex-1 min-h-0 p-3 overflow-auto">
+                      {modelagemSubtab === 'consumidores' && (
+                        <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+                          <div className="max-w-md w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl p-8 shadow-2xl">
+                            <div className="p-4 rounded-2xl bg-amber-500/10 text-amber-500 w-fit mx-auto mb-6">
+                              <HomeIcon className="w-12 h-12" />
+                            </div>
+                            <h3 className="text-xl font-bold text-zinc-100 mb-3">Gerenciador de Consumidores</h3>
+                            <p className="text-sm text-zinc-400 mb-8 leading-relaxed">
+                              Configure e gere medidores de consumo automatizados ao longo da rede. 
+                              Agora com suporte a fileiras duplas e transparência ajustada para melhor visibilidade.
+                            </p>
+                            <button
+                              onClick={() => {
+                                setTab('mapa');
+                                setShowCustomerMetersPanel(true);
+                              }}
+                              className="w-full flex items-center justify-center gap-2 px-6 py-4 rounded-xl bg-amber-500 text-zinc-950 font-bold hover:bg-amber-400 transition-all shadow-lg shadow-amber-900/20 active:scale-[0.98]"
+                            >
+                              <Play className="w-4 h-4" />
+                              ABRIR PAINEL DE CRIAÇÃO
+                            </button>
+                            <div className="mt-6 pt-6 border-t border-zinc-800 grid grid-cols-2 gap-4">
+                              <div className="text-left">
+                                <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold mb-1">MÉTRICA ATUAL</div>
+                                <div className="text-lg font-mono text-zinc-200">{customerMeters.length} <span className="text-xs text-zinc-600">unid</span></div>
+                              </div>
+                              <div className="text-left">
+                                <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold mb-1">LAYOUT</div>
+                                <div className="text-xs text-zinc-400/80 font-medium italic">Fileira única (lado afastado)</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {modelagemSubtab === 'controles' && (
+                        <HydraulicControlsTab
+                          data={{ ...networkData, hydraulicControls, sectors, customerMeters, smartSensors: smartInstalledSensors, telemetrySensors, telemetryReadings }}
+                          controls={hydraulicControls}
+                          onControlsChange={(nextControls) => {
+                            setHydraulicControls(nextControls);
+                            setNetworkData((prev) => prev ? { ...prev, hydraulicControls: nextControls } : prev);
+                          }}
+                          onElementFocus={(id) => {
+                            const el = networkData.nodes[id] || networkData.links[id];
+                            if (el) setSelectedElement(el);
+                          }}
+                          onTestSimulation={runSimulation}
+                        />
+                      )}
+
+                      {modelagemSubtab === 'mapa-gis' && (
+                        <ModelagemMapaGisView
+                          data={networkData}
+                          sectors={sectors}
+                          selectedElement={selectedElement}
+                          valveType={valveInsertType}
+                          setValveType={setValveInsertType}
+                          valveSetting={valveInsertSetting}
+                          setValveSetting={setValveInsertSetting}
+                          valveDiameter={valveInsertDiameter}
+                          setValveDiameter={setValveInsertDiameter}
+                          onElementClick={setSelectedElement}
+                          onValveInsertedOnPipe={handleValveInsertedOnPipe}
+                          onNodeMoved={handleNodeMoved}
+                          onNodeAdded={handleNodeAdded}
+                          onNodeAddedGetId={handleNodeAddedGetId}
+                          onPipeAdded={handlePipeAdded}
+                          onPipeConnectedToLink={handlePipeConnectedToLink}
+                          onElementDeleted={handleElementDeleted}
+                          onSaveNode={handleSaveNode}
+                          onSaveLink={handleSaveLink}
+                          onAddNode={(node) => updateNetwork(data => addNode(data, node))}
+                          onAddLink={(link) => updateNetwork(data => addLink(data, link))}
+                          editMode={gisEditMode}
+                          setEditMode={setGisEditMode}
+                          activeNodeKind={activeNodeKind}
+                          setActiveNodeKind={setActiveNodeKind}
+                          highlightIds={highlightIds}
+                          highlightColor={filteredSector?.cor}
+                          showSectorPolygons={showSectorPolygons}
+                          setShowSectorPolygons={setShowSectorPolygons}
+                          nodeColorMode={nodeColorMode}
+                          linkColorMode={linkColorMode}
+                        />
+                      )}
+
+                      {modelagemSubtab === 'parametros' && (
+                        <ModelagemParametrosTab
+                          data={networkData}
+                          onSaveNode={handleSaveNode}
+                          onSaveLink={handleSaveLink}
+                          onSaveCustomerMeter={handleSaveCustomerMeter}
+                        />
+                      )}
+
+                      {modelagemSubtab === 'calibracao' && (
+                        <div className="h-full min-h-0 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 flex flex-col">
+                          <SimulationOptionsPanel
+                            baseOptions={baseSimulationOptions}
+                            editedOptions={editedSimulationOptions}
+                            onChange={setEditedSimulationOptions}
+                            onApply={handleApplySimulationOptions}
+                            onRestoreDefaults={handleRestoreDefaultSimulationOptions}
+                            onRunSimulation={runSimulation}
+                            isSimulating={isSimulating}
+                          />
+                        </div>
+                      )}
+
+                      {modelagemSubtab !== 'controles' &&
+                        modelagemSubtab !== 'consumidores' &&
+                        modelagemSubtab !== 'mapa-gis' &&
+                        modelagemSubtab !== 'parametros' &&
+                        modelagemSubtab !== 'calibracao' && (
+                        <div className="h-full flex flex-col items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-500">
+                          <Cpu className="w-10 h-10 mb-3 opacity-30" />
+                          <div className="text-base font-semibold text-zinc-300">Subaba em preparação</div>
+                          <p className="text-sm">Use Controles, Mapa GIS, Consumidores, Calibração ou Parâmetros.</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1594,8 +2571,13 @@ export default function Home() {
                 )}
 
                 {tab === 'hidraulicos' && (
-                  <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 h-full overflow-auto">
-                    <SummaryCards summary={networkData.summary} stats={simStats} section="hydraulic" />
+                  <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+                    <HydraulicIndicatorsTab
+                      data={networkData}
+                      simStats={simStats}
+                      sectors={sectors}
+                      customerMeters={customerMeters}
+                    />
                   </div>
                 )}
 
@@ -1668,6 +2650,7 @@ export default function Home() {
                     setFilteredSectorId={setFilteredSectorId}
                     valveStatusOverride={valveStatusOverride}
                     setValveStatusOverride={setValveStatusOverride}
+                    onExportShp={handleExportSectorsToShp}
                   />
                 )}
 
@@ -1709,13 +2692,13 @@ export default function Home() {
                     onApplyScenario={handleApplyAISectorizationScenario}
                     onDeleteScenario={handleDeleteAISectorizationScenario}
                     onTogglePolygons={() => setShowSectorPolygons((prev) => !prev)}
-                    onExportShp={handleExportAISectorsToShp}
+                    onExportShp={handleExportSectorsToShp}
                     onClose={() => setShowAISectorizationPanel(false)}
                   />
                 </div>
               )}
 
-              {selectedElement && tab === 'gis' && !showAISectorizationPanel && (
+              {selectedElement && tab === 'gis' && !showAISectorizationPanel && !showCustomerMetersPanel && !showModelagemPanel && (
                 <EditableElementPanel
                   element={selectedElement}
                   onClose={() => setSelectedElement(null)}
@@ -1725,11 +2708,13 @@ export default function Home() {
                 />
               )}
 
-              {tab === 'mapa' && showCustomerMetersPanel && (
+              {(tab === 'mapa' || tab === 'gis') && showCustomerMetersPanel && !showAISectorizationPanel && (
                 <div className="w-80 flex-shrink-0">
                   <CustomerMetersPanel
                     demandM3Day={customerMeterDemandM3Day}
                     onDemandM3DayChange={setCustomerMeterDemandM3Day}
+                    targetCount={customerMeterTargetCount}
+                    onTargetCountChange={setCustomerMeterTargetCount}
                     spacingMeters={customerMeterSpacingMeters}
                     onSpacingMetersChange={setCustomerMeterSpacingMeters}
                     onCreateMeters={handleCreateCustomerMeters}

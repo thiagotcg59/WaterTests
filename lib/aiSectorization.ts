@@ -291,101 +291,576 @@ function largestPolygonFromGeometry(geometry: GeoJSON.Polygon | GeoJSON.MultiPol
   return candidates[0]?.geometry ?? makePolygon([]);
 }
 
-function buildCoverageMask(samples: JunctionSample[], transform: ReturnType<typeof buildGeoTransform>): GeoJSON.Polygon {
-  const lngLatPoints = samples.map((sample) => transform.toLngLat(sample.x, sample.y) as [number, number]);
-  const pointsFc = turf.featureCollection(lngLatPoints.map((coordinates) => turf.point(coordinates)));
-  const hull = turf.convex(pointsFc);
-
-  let basePolygon: GeoJSON.Polygon;
-  if (hull && (hull.geometry.type === 'Polygon' || hull.geometry.type === 'MultiPolygon')) {
-    basePolygon = largestPolygonFromGeometry(hull.geometry);
-  } else {
-    basePolygon = makePolygon(lngLatPoints);
-  }
-
-  const maskFeature = turf.polygon(basePolygon.coordinates);
-  const [minX, minY, maxX, maxY] = turf.bbox(maskFeature);
-  const diagonal = Math.hypot(maxX - minX, maxY - minY);
-  const pad = Math.max(diagonal * 0.02, 0.0002);
-  const expandedMask = turf.buffer(maskFeature, pad, { units: 'degrees' });
-  if (expandedMask && (expandedMask.geometry.type === 'Polygon' || expandedMask.geometry.type === 'MultiPolygon')) {
-    return largestPolygonFromGeometry(expandedMask.geometry);
-  }
-  return basePolygon;
-}
-
-function buildPartitionPolygons(
+function buildCoverageMask(
+  data: NetworkData,
   samples: JunctionSample[],
-  labels: number[],
-  uniqueClusters: number[],
   transform: ReturnType<typeof buildGeoTransform>
-): Map<number, GeoJSON.Polygon> {
-  const byCluster = new Map<number, Array<[number, number]>>();
-  uniqueClusters.forEach((clusterId) => byCluster.set(clusterId, []));
-  samples.forEach((sample, index) => {
-    const clusterId = labels[index];
-    const coords = transform.toLngLat(sample.x, sample.y) as [number, number];
-    byCluster.get(clusterId)?.push(coords);
+): GeoJSON.Polygon {
+  const NETWORK_OFFSET_KM = 0.03; // 30 m
+  const samplePoints = samples.map((sample) => transform.toLngLat(sample.x, sample.y) as [number, number]);
+  const allNodePoints = Object.values(data.nodes)
+    .filter((node) => !!node.coordinates)
+    .map((node) => transform.toLngLat(node.coordinates!.x, node.coordinates!.y) as [number, number]);
+  const lngLatPoints = [...samplePoints, ...allNodePoints];
+  const uniquePoints: Array<[number, number]> = [];
+  const seen = new Set<string>();
+  lngLatPoints.forEach((p) => {
+    const key = `${p[0].toFixed(7)}|${p[1].toFixed(7)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    uniquePoints.push(p);
   });
 
-  const maskPolygon = buildCoverageMask(samples, transform);
-  const maskFeature = turf.polygon(maskPolygon.coordinates);
+  const pointsFc = turf.featureCollection(uniquePoints.map((coordinates) => turf.point(coordinates)));
+  const pointsBbox = turf.bbox(pointsFc);
+  const diagonalKm = turf.distance(
+    turf.point([pointsBbox[0], pointsBbox[1]]),
+    turf.point([pointsBbox[2], pointsBbox[3]]),
+    { units: 'kilometers' }
+  );
 
-  if (uniqueClusters.length <= 1) {
-    return new Map([[uniqueClusters[0], maskPolygon]]);
+  const lineFeatures = Object.values(data.links)
+    .map((link) => {
+      const n1 = data.nodes[link.node1];
+      const n2 = data.nodes[link.node2];
+      if (!n1?.coordinates || !n2?.coordinates) return null;
+      const a = transform.toLngLat(n1.coordinates.x, n1.coordinates.y) as [number, number];
+      const b = transform.toLngLat(n2.coordinates.x, n2.coordinates.y) as [number, number];
+      if ((a[0] === b[0] && a[1] === b[1])) return null;
+      return turf.lineString([a, b], { id: link.id });
+    })
+    .filter(Boolean) as GeoJSON.Feature<GeoJSON.LineString>[];
+
+  const toOuterShell = (geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): GeoJSON.Polygon => {
+    const main = largestPolygonFromGeometry(geometry);
+    return {
+      type: 'Polygon',
+      coordinates: [main.coordinates[0]],
+    };
+  };
+
+  // Primary mask: external perimeter obtained from a fixed 30m offset over the network.
+  if (lineFeatures.length > 0) {
+    try {
+      const multiLine = turf.multiLineString(lineFeatures.map((feature) => feature.geometry.coordinates));
+      const bufferedNetwork = turf.buffer(multiLine, NETWORK_OFFSET_KM, { units: 'kilometers' });
+      let maskFeature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> | null = null;
+      if (
+        bufferedNetwork
+        && 'geometry' in bufferedNetwork
+        && bufferedNetwork.geometry
+        && (bufferedNetwork.geometry.type === 'Polygon' || bufferedNetwork.geometry.type === 'MultiPolygon')
+      ) {
+        maskFeature = bufferedNetwork as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
+      }
+
+      // Include isolated nodes (no links) so all model nodes are inside the coverage.
+      const isolatedNodeFeatures = Object.values(data.nodes)
+        .filter((node) => {
+          if (!node.coordinates) return false;
+          const hasAnyLink = lineFeatures.some((lf) => {
+            const [a, b] = lf.geometry.coordinates as [[number, number], [number, number]];
+            const p = transform.toLngLat(node.coordinates!.x, node.coordinates!.y) as [number, number];
+            const da = Math.hypot(a[0] - p[0], a[1] - p[1]);
+            const db = Math.hypot(b[0] - p[0], b[1] - p[1]);
+            return da < 1e-9 || db < 1e-9;
+          });
+          return !hasAnyLink;
+        })
+        .map((node) => {
+          const p = transform.toLngLat(node.coordinates!.x, node.coordinates!.y) as [number, number];
+          return turf.point(p);
+        });
+
+      if (maskFeature && isolatedNodeFeatures.length > 0) {
+        const isolatedBuffer = turf.buffer(turf.featureCollection(isolatedNodeFeatures), NETWORK_OFFSET_KM, { units: 'kilometers' });
+        if (isolatedBuffer?.features?.length) {
+          const pieces = isolatedBuffer.features.filter(
+            (f): f is GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> =>
+              !!f?.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+          );
+          pieces.forEach((piece) => {
+            const merged = turf.union(turf.featureCollection([maskFeature as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>, piece]));
+            if (merged?.geometry && (merged.geometry.type === 'Polygon' || merged.geometry.type === 'MultiPolygon')) {
+              maskFeature = merged as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
+            }
+          });
+        }
+      }
+
+      if (maskFeature?.geometry && (maskFeature.geometry.type === 'Polygon' || maskFeature.geometry.type === 'MultiPolygon')) {
+        return toOuterShell(maskFeature.geometry);
+      }
+    } catch {
+      // Fallback below.
+    }
   }
 
+  // Fallback for degenerate/very small models: concave hull and a 30m expansion.
+  const concaveMaxEdgeKm = Math.max(0.12, diagonalKm * 0.22);
+  const concaveHull = turf.concave(pointsFc, { maxEdge: concaveMaxEdgeKm, units: 'kilometers' });
+  const hull = concaveHull ?? turf.convex(pointsFc);
+  if (hull?.geometry && (hull.geometry.type === 'Polygon' || hull.geometry.type === 'MultiPolygon')) {
+    try {
+      const expanded = turf.buffer(hull as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>, NETWORK_OFFSET_KM, { units: 'kilometers' });
+      if (expanded?.geometry && (expanded.geometry.type === 'Polygon' || expanded.geometry.type === 'MultiPolygon')) {
+        return toOuterShell(expanded.geometry);
+      }
+    } catch {
+      return toOuterShell(hull.geometry);
+    }
+  }
+
+  return makePolygon(uniquePoints);
+}
+
+function geometryPieces(
+  geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon
+): Array<GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>> {
+  if (geometry.type === 'Polygon') return [turf.polygon(geometry.coordinates)];
+  return geometry.coordinates.map((coordinates) => turf.polygon(coordinates));
+}
+
+function nearestClusterId(
+  cellFeature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
+  samplePoints: Array<{ coordinates: [number, number]; clusterId: number }>
+): number {
+  const center = turf.centroid(cellFeature).geometry.coordinates as [number, number];
+  let nearest = samplePoints[0];
+  let bestDist = Number.POSITIVE_INFINITY;
+  samplePoints.forEach((sample) => {
+    const dist = Math.hypot(center[0] - sample.coordinates[0], center[1] - sample.coordinates[1]);
+    if (dist < bestDist) {
+      bestDist = dist;
+      nearest = sample;
+    }
+  });
+  return nearest.clusterId;
+}
+
+function buildVoronoiPartitionFromSeeds(
+  seedPoints: Array<{ coordinates: [number, number]; clusterId: number }>,
+  samplePoints: Array<{ coordinates: [number, number]; clusterId: number }>,
+  uniqueClusters: number[],
+  maskFeature: GeoJSON.Feature<GeoJSON.Polygon>
+): Map<number, GeoJSON.Polygon> {
   const usedSeedKeys = new Set<string>();
-  const seedFeatures = uniqueClusters.map((clusterId, idx) => {
-    const points = byCluster.get(clusterId) ?? [];
-    const [cx, cy] = centroid(points);
-    let sx = cx;
-    let sy = cy;
+  const seedFeatures = seedPoints.map((seed, idx) => {
+    let [sx, sy] = seed.coordinates;
     let key = `${sx.toFixed(8)}|${sy.toFixed(8)}`;
     let jitterStep = 1;
     while (usedSeedKeys.has(key)) {
-      sx += 0.000001 * jitterStep;
-      sy += 0.000001 * jitterStep;
+      sx += 0.0000007 * jitterStep;
+      sy += 0.0000007 * jitterStep;
       key = `${sx.toFixed(8)}|${sy.toFixed(8)}`;
       jitterStep += 1;
     }
     usedSeedKeys.add(key);
-    return turf.point([sx, sy], { clusterId, seedIndex: idx });
+    return turf.point([sx, sy], { clusterId: seed.clusterId, seedIndex: idx });
   });
 
   const [minX, minY, maxX, maxY] = turf.bbox(maskFeature);
   const pad = Math.max((maxX - minX) * 0.05, (maxY - minY) * 0.05, 0.0005);
   const bbox: [number, number, number, number] = [minX - pad, minY - pad, maxX + pad, maxY + pad];
   const voronoi = turf.voronoi(turf.featureCollection(seedFeatures), { bbox });
-  const polygons = new Map<number, GeoJSON.Polygon>();
+  const clippedCellsByCluster = new Map<number, Array<GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>>>();
+  uniqueClusters.forEach((clusterId) => clippedCellsByCluster.set(clusterId, []));
 
-  if (voronoi) {
-    voronoi.features.forEach((cell) => {
-      if (!cell?.geometry || (cell.geometry.type !== 'Polygon' && cell.geometry.type !== 'MultiPolygon')) return;
-      const clusterId = Number((cell.properties as Record<string, unknown> | undefined)?.clusterId);
-      if (!Number.isFinite(clusterId)) return;
+  if (!voronoi) return new Map();
+
+  voronoi.features.forEach((cell) => {
+    if (!cell?.geometry || (cell.geometry.type !== 'Polygon' && cell.geometry.type !== 'MultiPolygon')) return;
+    const rawClusterId = Number((cell.properties as Record<string, unknown> | undefined)?.clusterId);
+    const clusterId = Number.isFinite(rawClusterId)
+      ? rawClusterId
+      : nearestClusterId(cell as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>, samplePoints);
+    if (!uniqueClusters.includes(clusterId)) return;
+
+    let clippedGeometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
+    try {
+      const clipped = turf.intersect(
+        turf.featureCollection([
+          cell as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
+          maskFeature,
+        ])
+      );
+      if (clipped?.geometry && (clipped.geometry.type === 'Polygon' || clipped.geometry.type === 'MultiPolygon')) {
+        clippedGeometry = clipped.geometry;
+      }
+    } catch {
+      // Keep original cell geometry as fallback.
+    }
+
+    const geometryToStore = clippedGeometry ?? (cell.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon);
+    geometryPieces(geometryToStore).forEach((piece) => {
+      clippedCellsByCluster.get(clusterId)?.push(piece);
+    });
+  });
+
+  const polygons = new Map<number, GeoJSON.Polygon>();
+  uniqueClusters.forEach((clusterId) => {
+    const pieces = clippedCellsByCluster.get(clusterId) ?? [];
+    if (pieces.length === 0) return;
+
+    let dissolved: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> | null = null;
+    for (const piece of pieces) {
+      if (!dissolved) {
+        dissolved = piece;
+        continue;
+      }
       try {
-        const clipped = turf.intersect(
+        const merged = turf.union(
           turf.featureCollection([
-            cell as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
-            maskFeature,
+            dissolved as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
+            piece as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
           ])
         );
-        if (!clipped?.geometry || (clipped.geometry.type !== 'Polygon' && clipped.geometry.type !== 'MultiPolygon')) return;
-        polygons.set(clusterId, largestPolygonFromGeometry(clipped.geometry));
+        if (merged?.geometry && (merged.geometry.type === 'Polygon' || merged.geometry.type === 'MultiPolygon')) {
+          dissolved = merged as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
+        }
       } catch {
-        polygons.set(clusterId, largestPolygonFromGeometry(cell.geometry));
+        // Ignore union failure and keep previous dissolved geometry.
       }
-    });
-  }
+    }
 
-  uniqueClusters.forEach((clusterId) => {
-    if (polygons.has(clusterId)) return;
-    const points = byCluster.get(clusterId) ?? [];
-    polygons.set(clusterId, makePolygon(points));
+    if (!dissolved) return;
+    const dissolvedGeometry = dissolved.geometry;
+    if (!dissolvedGeometry || (dissolvedGeometry.type !== 'Polygon' && dissolvedGeometry.type !== 'MultiPolygon')) return;
+    polygons.set(clusterId, largestPolygonFromGeometry(dissolvedGeometry));
   });
 
   return polygons;
+}
+
+function dissolvePiecesToPolygon(
+  pieces: Array<GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>>,
+  fallbackPoints: Array<[number, number]>
+): GeoJSON.Polygon {
+  if (pieces.length === 0) return makePolygon(fallbackPoints);
+  let dissolved: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> | null = null;
+  for (const piece of pieces) {
+    if (!dissolved) {
+      dissolved = piece;
+      continue;
+    }
+    try {
+      const merged = turf.union(
+        turf.featureCollection([
+          dissolved as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
+          piece as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>,
+        ])
+      );
+      if (merged?.geometry && (merged.geometry.type === 'Polygon' || merged.geometry.type === 'MultiPolygon')) {
+        dissolved = merged as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
+      }
+    } catch {
+      // Keep the previous dissolved geometry.
+    }
+  }
+
+  if (!dissolved?.geometry || (dissolved.geometry.type !== 'Polygon' && dissolved.geometry.type !== 'MultiPolygon')) {
+    return makePolygon(fallbackPoints);
+  }
+  return largestPolygonFromGeometry(dissolved.geometry);
+}
+
+function buildGridPartitionPolygons(
+  byClusterPoints: Map<number, Array<[number, number]>>,
+  samplePoints: Array<{ coordinates: [number, number]; clusterId: number }>,
+  uniqueClusters: number[],
+  maskFeature: GeoJSON.Feature<GeoJSON.Polygon>
+): Map<number, GeoJSON.Polygon> {
+  if (samplePoints.length === 0) {
+    const empty = new Map<number, GeoJSON.Polygon>();
+    uniqueClusters.forEach((clusterId) => empty.set(clusterId, makePolygon(byClusterPoints.get(clusterId) ?? [])));
+    return empty;
+  }
+
+  const bbox = turf.bbox(maskFeature);
+  const diagonalKm = turf.distance(
+    turf.point([bbox[0], bbox[1]]),
+    turf.point([bbox[2], bbox[3]]),
+    { units: 'kilometers' }
+  );
+  const cellSideKm = Math.min(0.22, Math.max(0.035, diagonalKm / 26));
+  const grid = turf.squareGrid(bbox, cellSideKm, { units: 'kilometers', mask: maskFeature });
+
+  const nearestCluster = (point: [number, number], exclude?: number): number => {
+    let winner = samplePoints[0].clusterId;
+    let bestDist = Number.POSITIVE_INFINITY;
+    samplePoints.forEach((sample) => {
+      if (typeof exclude === 'number' && sample.clusterId === exclude) return;
+      const dist = Math.hypot(point[0] - sample.coordinates[0], point[1] - sample.coordinates[1]);
+      if (dist < bestDist) {
+        bestDist = dist;
+        winner = sample.clusterId;
+      }
+    });
+    return winner;
+  };
+
+  const rawCells = grid.features
+    .map((cell, idx) => {
+      if (!cell?.geometry || cell.geometry.type !== 'Polygon') return null;
+      const center = turf.centroid(cell).geometry.coordinates as [number, number];
+      return {
+        id: idx,
+        feature: cell as GeoJSON.Feature<GeoJSON.Polygon>,
+        center,
+        clusterId: nearestCluster(center),
+        ix: -1,
+        iy: -1,
+      };
+    })
+    .filter((cell): cell is {
+      id: number;
+      feature: GeoJSON.Feature<GeoJSON.Polygon>;
+      center: [number, number];
+      clusterId: number;
+      ix: number;
+      iy: number;
+    } => !!cell);
+
+  const xVals = Array.from(new Set(rawCells.map((cell) => cell.center[0].toFixed(8)))).map(Number).sort((a, b) => a - b);
+  const yVals = Array.from(new Set(rawCells.map((cell) => cell.center[1].toFixed(8)))).map(Number).sort((a, b) => a - b);
+  const indexByX = new Map<number, number>();
+  const indexByY = new Map<number, number>();
+  xVals.forEach((x, i) => indexByX.set(Number(x.toFixed(8)), i));
+  yVals.forEach((y, i) => indexByY.set(Number(y.toFixed(8)), i));
+
+  rawCells.forEach((cell) => {
+    cell.ix = indexByX.get(Number(cell.center[0].toFixed(8))) ?? 0;
+    cell.iy = indexByY.get(Number(cell.center[1].toFixed(8))) ?? 0;
+  });
+
+  const cellByCoord = new Map<string, typeof rawCells[number]>();
+  rawCells.forEach((cell) => {
+    cellByCoord.set(`${cell.ix}|${cell.iy}`, cell);
+  });
+
+  const neighborsOf = (cell: typeof rawCells[number]) => {
+    const out: Array<typeof rawCells[number]> = [];
+    const keys = [
+      `${cell.ix - 1}|${cell.iy}`,
+      `${cell.ix + 1}|${cell.iy}`,
+      `${cell.ix}|${cell.iy - 1}`,
+      `${cell.ix}|${cell.iy + 1}`,
+    ];
+    keys.forEach((key) => {
+      const n = cellByCoord.get(key);
+      if (n) out.push(n);
+    });
+    return out;
+  };
+
+  const buildComponents = (clusterId: number): Array<Array<typeof rawCells[number]>> => {
+    const nodes = rawCells.filter((cell) => cell.clusterId === clusterId);
+    const pending = new Set(nodes.map((cell) => cell.id));
+    const byId = new Map(nodes.map((cell) => [cell.id, cell]));
+    const groups: Array<Array<typeof rawCells[number]>> = [];
+
+    while (pending.size > 0) {
+      const startId = pending.values().next().value as number;
+      pending.delete(startId);
+      const queue = [startId];
+      const group: Array<typeof rawCells[number]> = [];
+
+      while (queue.length > 0) {
+        const currentId = queue.shift()!;
+        const current = byId.get(currentId);
+        if (!current) continue;
+        group.push(current);
+        neighborsOf(current).forEach((neighbor) => {
+          if (neighbor.clusterId !== clusterId) return;
+          if (!pending.has(neighbor.id)) return;
+          pending.delete(neighbor.id);
+          queue.push(neighbor.id);
+        });
+      }
+      if (group.length > 0) groups.push(group);
+    }
+    return groups.sort((a, b) => b.length - a.length);
+  };
+
+  // Reassign detached islands to neighboring clusters so each setor stays continuous.
+  for (let pass = 0; pass < 6; pass += 1) {
+    let changed = false;
+    uniqueClusters.forEach((clusterId) => {
+      const groups = buildComponents(clusterId);
+      if (groups.length <= 1) return;
+      const detached = groups.slice(1).flat();
+      detached.forEach((cell) => {
+        const votes = new Map<number, number>();
+        neighborsOf(cell).forEach((neighbor) => {
+          if (neighbor.clusterId === clusterId) return;
+          votes.set(neighbor.clusterId, (votes.get(neighbor.clusterId) || 0) + 1);
+        });
+        if (votes.size > 0) {
+          const target = Array.from(votes.entries()).sort((a, b) => b[1] - a[1])[0][0];
+          if (target !== cell.clusterId) {
+            cell.clusterId = target;
+            changed = true;
+            return;
+          }
+        }
+        const fallbackTarget = nearestCluster(cell.center, clusterId);
+        if (fallbackTarget !== cell.clusterId) {
+          cell.clusterId = fallbackTarget;
+          changed = true;
+        }
+      });
+    });
+    if (!changed) break;
+  }
+
+  const piecesByCluster = new Map<number, Array<GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>>>();
+  uniqueClusters.forEach((clusterId) => piecesByCluster.set(clusterId, []));
+  rawCells.forEach((cell) => {
+    piecesByCluster.get(cell.clusterId)?.push(cell.feature as GeoJSON.Feature<GeoJSON.Polygon>);
+  });
+
+  const polygons = new Map<number, GeoJSON.Polygon>();
+  uniqueClusters.forEach((clusterId) => {
+    const pieces = piecesByCluster.get(clusterId) ?? [];
+    const fallbackPoints = byClusterPoints.get(clusterId) ?? [];
+    polygons.set(clusterId, dissolvePiecesToPolygon(pieces, fallbackPoints));
+  });
+
+  // Fill uncovered gaps in the mask by attaching each gap piece to the nearest cluster.
+  try {
+    let covered: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon> | null = null;
+    polygons.forEach((poly) => {
+      const feature = turf.polygon(poly.coordinates);
+      if (!covered) {
+        covered = feature;
+        return;
+      }
+      const merged = turf.union(turf.featureCollection([covered, feature]));
+      if (merged?.geometry && (merged.geometry.type === 'Polygon' || merged.geometry.type === 'MultiPolygon')) {
+        covered = merged as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
+      }
+    });
+
+    if (covered) {
+      const gap = turf.difference(turf.featureCollection([maskFeature, covered]));
+      if (gap?.geometry && (gap.geometry.type === 'Polygon' || gap.geometry.type === 'MultiPolygon')) {
+        geometryPieces(gap.geometry).forEach((piece) => {
+          const center = turf.centroid(piece).geometry.coordinates as [number, number];
+          const clusterId = nearestCluster(center);
+          const current = polygons.get(clusterId);
+          if (!current) return;
+          const merged = turf.union(turf.featureCollection([turf.polygon(current.coordinates), piece]));
+          if (merged?.geometry && (merged.geometry.type === 'Polygon' || merged.geometry.type === 'MultiPolygon')) {
+            polygons.set(clusterId, largestPolygonFromGeometry(merged.geometry));
+          }
+        });
+      }
+    }
+  } catch {
+    // Keep partition when robust fill fails.
+  }
+
+  return polygons;
+}
+
+function buildPartitionPolygons(
+  data: NetworkData,
+  samples: JunctionSample[],
+  labels: number[],
+  uniqueClusters: number[],
+  transform: ReturnType<typeof buildGeoTransform>
+): Map<number, GeoJSON.Polygon> {
+  const byClusterPoints = new Map<number, Array<[number, number]>>();
+  uniqueClusters.forEach((clusterId) => byClusterPoints.set(clusterId, []));
+  const samplePoints = samples.map((sample, index) => {
+    const coordinates = transform.toLngLat(sample.x, sample.y) as [number, number];
+    const clusterId = labels[index];
+    byClusterPoints.get(clusterId)?.push(coordinates);
+    return {
+      coordinates,
+      clusterId,
+    };
+  });
+
+  const maskPolygon = buildCoverageMask(data, samples, transform);
+  const maskFeature = turf.polygon(maskPolygon.coordinates);
+
+  if (uniqueClusters.length <= 1) {
+    return new Map([[uniqueClusters[0], maskPolygon]]);
+  }
+
+  const polygonsFromSamples = buildVoronoiPartitionFromSeeds(samplePoints, samplePoints, uniqueClusters, maskFeature);
+  const polygonsFromGrid = buildGridPartitionPolygons(byClusterPoints, samplePoints, uniqueClusters, maskFeature);
+  const lowCoverageCluster = uniqueClusters.find((clusterId) => {
+    const polygon = polygonsFromGrid.get(clusterId) ?? polygonsFromSamples.get(clusterId);
+    if (!polygon) return true;
+    const polygonFeature = turf.polygon(polygon.coordinates);
+    const clusterPoints = byClusterPoints.get(clusterId) ?? [];
+    if (clusterPoints.length === 0) return false;
+    let insideCount = 0;
+    clusterPoints.forEach((point) => {
+      if (turf.booleanPointInPolygon(turf.point(point), polygonFeature)) insideCount += 1;
+    });
+    return (insideCount / clusterPoints.length) < 0.65;
+  });
+
+  if (!lowCoverageCluster) {
+    return polygonsFromGrid;
+  }
+
+  const centroidSeeds = uniqueClusters.map((clusterId) => {
+    const clusterPoints = byClusterPoints.get(clusterId) ?? [];
+    const c = centroid(clusterPoints.length > 0 ? clusterPoints : samplePoints.map((s) => s.coordinates));
+    return {
+      coordinates: c,
+      clusterId,
+    };
+  });
+
+  const polygonsFromCentroids = buildVoronoiPartitionFromSeeds(centroidSeeds, samplePoints, uniqueClusters, maskFeature);
+  const merged = new Map<number, GeoJSON.Polygon>();
+  uniqueClusters.forEach((clusterId) => {
+    merged.set(
+      clusterId,
+      polygonsFromGrid.get(clusterId)
+      ?? polygonsFromCentroids.get(clusterId)
+      ?? polygonsFromSamples.get(clusterId)
+      ?? makePolygon(byClusterPoints.get(clusterId) ?? [])
+    );
+  });
+
+  const clipped = new Map<number, GeoJSON.Polygon>();
+  uniqueClusters.forEach((clusterId) => {
+    const polygon = merged.get(clusterId);
+    if (!polygon) return;
+    try {
+      const clippedFeature = turf.intersect(
+        turf.featureCollection([
+          turf.polygon(polygon.coordinates),
+          maskFeature,
+        ])
+      );
+      if (clippedFeature?.geometry && (clippedFeature.geometry.type === 'Polygon' || clippedFeature.geometry.type === 'MultiPolygon')) {
+        clipped.set(clusterId, largestPolygonFromGeometry(clippedFeature.geometry));
+        return;
+      }
+    } catch {
+      // keep non-clipped fallback
+    }
+    clipped.set(clusterId, polygon);
+  });
+
+  uniqueClusters.forEach((clusterId) => {
+    if (!clipped.has(clusterId)) {
+      clipped.set(
+        clusterId,
+      polygonsFromCentroids.get(clusterId)
+      ?? polygonsFromSamples.get(clusterId)
+      ?? makePolygon(byClusterPoints.get(clusterId) ?? [])
+    );
+    }
+  });
+  return clipped;
 }
 
 function buildSectorLinkIds(data: NetworkData, nodeSet: Set<string>): string[] {
@@ -486,9 +961,11 @@ export function generateAISectorization(data: NetworkData, config: AISectorizati
   const labels = improveConnectivity(data, samples, initialLabels);
   const uniqueClusters = Array.from(new Set(labels)).sort((a, b) => a - b);
 
-  const coords = samples.map((sample) => ({ x: sample.x, y: sample.y }));
+  const coords = Object.values(data.nodes)
+    .filter((node) => !!node.coordinates)
+    .map((node) => ({ x: node.coordinates!.x, y: node.coordinates!.y }));
   const transform = buildGeoTransform(coords);
-  const partitionPolygons = buildPartitionPolygons(samples, labels, uniqueClusters, transform);
+  const partitionPolygons = buildPartitionPolygons(data, samples, labels, uniqueClusters, transform);
 
   const sectors: Sector[] = uniqueClusters.map((clusterId, clusterIndex) => {
     const members = samples.filter((sample, index) => labels[index] === clusterId);

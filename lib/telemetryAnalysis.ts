@@ -49,12 +49,33 @@ export interface SensorMetrics {
   minAbsDiff: number | null;
   hourMaxDivergence: number | null;
 
-  // mínima noturna
+  // mínima noturna (madrugada)
   nightWindowStart: number;
   nightWindowEnd: number;
   nightMinMeasured: number | null;
   nightMinSimulated: number | null;
   nightAvgMeasured: number | null;
+  nightAvgSimulated: number | null;
+  nightMaxMeasured: number | null;
+  nightMaxSimulated: number | null;
+  nightPairedHours: number;
+  nightMae: number | null;
+  nightMaxAbsDiff: number | null;
+  nightHourMaxDiff: number | null;
+
+  // janela de consumo (diurno)
+  dayWindowStart: number;
+  dayWindowEnd: number;
+  dayAvgMeasured: number | null;
+  dayAvgSimulated: number | null;
+  dayMinMeasured: number | null;
+  dayMinSimulated: number | null;
+  dayMaxMeasured: number | null;
+  dayMaxSimulated: number | null;
+  dayPairedHours: number;
+  dayMae: number | null;
+  dayMaxAbsDiff: number | null;
+  dayHourMaxDiff: number | null;
 
   // pressão / vazão pontuais
   hourMinMeasured: number | null;
@@ -73,6 +94,8 @@ export interface SensorMetrics {
 export interface TelemetryAnalysisOptions {
   nightStartHour: number;
   nightEndHour: number;
+  dayStartHour: number;
+  dayEndHour: number;
   pressureMaxOk: number;
   pressureMinOk: number;
   pressureNightAlert: number;
@@ -84,6 +107,8 @@ export interface TelemetryAnalysisOptions {
 export const DEFAULT_TELEMETRY_OPTIONS: TelemetryAnalysisOptions = {
   nightStartHour: 2,
   nightEndHour: 4,
+  dayStartHour: 8,
+  dayEndHour: 22,
   pressureMaxOk: 50,
   pressureMinOk: 10,
   pressureNightAlert: 35,
@@ -100,6 +125,8 @@ export interface TelemetryAnalysisResult {
   totalAnomalies: number;
   criticalSensors: number;
   averageMae: number | null;
+  averageNightMae: number | null;
+  averageDayMae: number | null;
   averageRiskScore: number | null;
   globalDiagnostic: string[];
   globalRecommendations: string[];
@@ -147,18 +174,78 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-function nightHours(opts: TelemetryAnalysisOptions, totalHours: number): number[] {
+function hoursInWindow(startHour: number, endHour: number, totalHours: number): number[] {
   const result: number[] = [];
-  const start = clamp(Math.floor(opts.nightStartHour), 0, totalHours);
-  const end = clamp(Math.ceil(opts.nightEndHour), 0, totalHours);
+  const start = clamp(Math.floor(startHour), 0, totalHours);
+  const end = clamp(Math.ceil(endHour), 0, totalHours);
   if (end >= start) {
     for (let h = start; h < end && h < totalHours; h += 1) result.push(h);
   } else {
-    // janela atravessa meia-noite (ex.: 22-04)
     for (let h = start; h < totalHours; h += 1) result.push(h);
     for (let h = 0; h < end && h < totalHours; h += 1) result.push(h);
   }
   return result;
+}
+
+function nightHours(opts: TelemetryAnalysisOptions, totalHours: number): number[] {
+  return hoursInWindow(opts.nightStartHour, opts.nightEndHour, totalHours);
+}
+
+function dayHours(opts: TelemetryAnalysisOptions, totalHours: number): number[] {
+  return hoursInWindow(opts.dayStartHour, opts.dayEndHour, totalHours);
+}
+
+interface WindowStats {
+  pairedHours: number;
+  mae: number | null;
+  maxAbsDiff: number | null;
+  hourMaxDiff: number | null;
+  measuredAvg: number | null;
+  simulatedAvg: number | null;
+  measuredMin: number | null;
+  simulatedMin: number | null;
+  measuredMax: number | null;
+  simulatedMax: number | null;
+}
+
+function computeWindowStats(
+  hours: number[],
+  measuredByHour: Map<number, number>,
+  simulatedByHour: Map<number, number>,
+): WindowStats {
+  const measuredArr: number[] = [];
+  const simulatedArr: number[] = [];
+  let absSum = 0;
+  let pairedCount = 0;
+  let maxAbs = -Infinity;
+  let hourMax: number | null = null;
+  hours.forEach((h) => {
+    const m = measuredByHour.get(h);
+    const s = simulatedByHour.get(h);
+    if (typeof m === 'number') measuredArr.push(m);
+    if (typeof s === 'number') simulatedArr.push(s);
+    if (typeof m === 'number' && typeof s === 'number') {
+      const abs = Math.abs(m - s);
+      absSum += abs;
+      pairedCount += 1;
+      if (abs > maxAbs) {
+        maxAbs = abs;
+        hourMax = h;
+      }
+    }
+  });
+  return {
+    pairedHours: pairedCount,
+    mae: pairedCount > 0 ? absSum / pairedCount : null,
+    maxAbsDiff: Number.isFinite(maxAbs) ? maxAbs : null,
+    hourMaxDiff: hourMax,
+    measuredAvg: measuredArr.length ? mean(measuredArr) : null,
+    simulatedAvg: simulatedArr.length ? mean(simulatedArr) : null,
+    measuredMin: measuredArr.length ? Math.min(...measuredArr) : null,
+    simulatedMin: simulatedArr.length ? Math.min(...simulatedArr) : null,
+    measuredMax: measuredArr.length ? Math.max(...measuredArr) : null,
+    simulatedMax: simulatedArr.length ? Math.max(...simulatedArr) : null,
+  };
 }
 
 function buildDiagnosticAndRecommendations(
@@ -469,6 +556,8 @@ export function analyzeTelemetry(
       totalAnomalies: 0,
       criticalSensors: 0,
       averageMae: null,
+      averageNightMae: null,
+      averageDayMae: null,
       averageRiskScore: null,
       globalDiagnostic: [],
       globalRecommendations: [],
@@ -576,11 +665,9 @@ export function analyzeTelemetry(
 
     const totalHours = Math.max(allHours.length > 0 ? Math.max(...allHours) + 1 : 0, 24);
     const nights = nightHours(options, totalHours);
-    const nightMeasuredArr = nights.map((h) => measuredByHour.get(h)).filter((v): v is number => typeof v === 'number');
-    const nightSimulatedArr = nights.map((h) => simulatedByHour.get(h)).filter((v): v is number => typeof v === 'number');
-    const nightMinMeasured = nightMeasuredArr.length ? Math.min(...nightMeasuredArr) : null;
-    const nightMinSimulated = nightSimulatedArr.length ? Math.min(...nightSimulatedArr) : null;
-    const nightAvgMeasured = nightMeasuredArr.length ? mean(nightMeasuredArr) : null;
+    const days = dayHours(options, totalHours);
+    const nightStats = computeWindowStats(nights, measuredByHour, simulatedByHour);
+    const dayStats = computeWindowStats(days, measuredByHour, simulatedByHour);
 
     const pressureDailyAmplitude = measuredMin !== null && measuredMax !== null ? measuredMax - measuredMin : null;
     const variationCv = measuredAvg && measuredAvg !== 0 ? stdev(measuredArr) / Math.abs(measuredAvg) : null;
@@ -608,9 +695,28 @@ export function analyzeTelemetry(
       hourMaxDivergence: hourMaxDiv,
       nightWindowStart: options.nightStartHour,
       nightWindowEnd: options.nightEndHour,
-      nightMinMeasured,
-      nightMinSimulated,
-      nightAvgMeasured,
+      nightMinMeasured: nightStats.measuredMin,
+      nightMinSimulated: nightStats.simulatedMin,
+      nightAvgMeasured: nightStats.measuredAvg,
+      nightAvgSimulated: nightStats.simulatedAvg,
+      nightMaxMeasured: nightStats.measuredMax,
+      nightMaxSimulated: nightStats.simulatedMax,
+      nightPairedHours: nightStats.pairedHours,
+      nightMae: nightStats.mae,
+      nightMaxAbsDiff: nightStats.maxAbsDiff,
+      nightHourMaxDiff: nightStats.hourMaxDiff,
+      dayWindowStart: options.dayStartHour,
+      dayWindowEnd: options.dayEndHour,
+      dayAvgMeasured: dayStats.measuredAvg,
+      dayAvgSimulated: dayStats.simulatedAvg,
+      dayMinMeasured: dayStats.measuredMin,
+      dayMinSimulated: dayStats.simulatedMin,
+      dayMaxMeasured: dayStats.measuredMax,
+      dayMaxSimulated: dayStats.simulatedMax,
+      dayPairedHours: dayStats.pairedHours,
+      dayMae: dayStats.mae,
+      dayMaxAbsDiff: dayStats.maxAbsDiff,
+      dayHourMaxDiff: dayStats.hourMaxDiff,
       hourMinMeasured,
       hourMaxMeasured,
       pressureDailyAmplitude,
@@ -646,7 +752,11 @@ export function analyzeTelemetry(
   const totalAnomalies = sensorMetrics.reduce((acc, s) => acc + s.anomalies.length, 0);
   const criticalSensors = sensorMetrics.filter((s) => s.severity === 'alta' || s.severity === 'critica').length;
   const maes = sensorMetrics.map((s) => s.mae).filter((v): v is number => typeof v === 'number');
+  const nightMaes = sensorMetrics.map((s) => s.nightMae).filter((v): v is number => typeof v === 'number');
+  const dayMaes = sensorMetrics.map((s) => s.dayMae).filter((v): v is number => typeof v === 'number');
   const averageMae = maes.length ? mean(maes) : null;
+  const averageNightMae = nightMaes.length ? mean(nightMaes) : null;
+  const averageDayMae = dayMaes.length ? mean(dayMaes) : null;
   const risks = sensorMetrics.map((s) => s.riskScore);
   const averageRiskScore = risks.length ? mean(risks) : null;
 
@@ -675,6 +785,8 @@ export function analyzeTelemetry(
     totalAnomalies,
     criticalSensors,
     averageMae,
+    averageNightMae,
+    averageDayMae,
     averageRiskScore,
     globalDiagnostic,
     globalRecommendations,
@@ -687,8 +799,9 @@ export function generateAiReport(result: TelemetryAnalysisResult): {
 } {
   const payload = {
     geradoEm: new Date().toISOString(),
-    metodologia: 'Análise estatística e regras hidráulicas: z-score, comparação medido × simulado, mínima noturna, regra pressão-baixa+vazão-alta, divergência persistente.',
+    metodologia: 'Análise estatística e regras hidráulicas: z-score, comparação medido × simulado, mínima noturna, regra pressão-baixa+vazão-alta, divergência persistente. Janelas separadas para madrugada e período de consumo.',
     janelaNoturna: `${result.options.nightStartHour}h–${result.options.nightEndHour}h`,
+    janelaConsumo: `${result.options.dayStartHour}h–${result.options.dayEndHour}h`,
     limites: {
       pressaoMinOk: result.options.pressureMinOk,
       pressaoMaxOk: result.options.pressureMaxOk,
@@ -701,6 +814,8 @@ export function generateAiReport(result: TelemetryAnalysisResult): {
       totalAnomalias: result.totalAnomalies,
       sensoresCriticos: result.criticalSensors,
       maeMedio: result.averageMae,
+      maeMedioNoturno: result.averageNightMae,
+      maeMedioConsumo: result.averageDayMae,
       scoreRiscoMedio: result.averageRiskScore,
     },
     diagnosticoGlobal: result.globalDiagnostic,
@@ -717,8 +832,32 @@ export function generateAiReport(result: TelemetryAnalysisResult): {
       erroPercentual: s.meanPctError,
       diferencaMaxima: s.maxAbsDiff,
       horarioMaiorDivergencia: s.hourMaxDivergence,
-      pressaoMinNoturna: s.nightMinMeasured,
-      pressaoMediaNoturna: s.nightAvgMeasured,
+      madrugada: {
+        janela: `${s.nightWindowStart}h-${s.nightWindowEnd}h`,
+        horasPareadas: s.nightPairedHours,
+        mae: s.nightMae,
+        diferencaMaxima: s.nightMaxAbsDiff,
+        horarioMaiorDivergencia: s.nightHourMaxDiff,
+        medidoMin: s.nightMinMeasured,
+        medidoMedio: s.nightAvgMeasured,
+        medidoMax: s.nightMaxMeasured,
+        simuladoMin: s.nightMinSimulated,
+        simuladoMedio: s.nightAvgSimulated,
+        simuladoMax: s.nightMaxSimulated,
+      },
+      consumo: {
+        janela: `${s.dayWindowStart}h-${s.dayWindowEnd}h`,
+        horasPareadas: s.dayPairedHours,
+        mae: s.dayMae,
+        diferencaMaxima: s.dayMaxAbsDiff,
+        horarioMaiorDivergencia: s.dayHourMaxDiff,
+        medidoMin: s.dayMinMeasured,
+        medidoMedio: s.dayAvgMeasured,
+        medidoMax: s.dayMaxMeasured,
+        simuladoMin: s.dayMinSimulated,
+        simuladoMedio: s.dayAvgSimulated,
+        simuladoMax: s.dayMaxSimulated,
+      },
       diagnostico: s.diagnostic,
       recomendacoes: s.recommendations,
       anomalias: s.anomalies,

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { NetworkData, Sector, NodeElement, LinkElement } from '../types/epanet';
-import { Plus, Trash2, MapPin, Power } from 'lucide-react';
+import { Plus, Trash2, MapPin, Power, RefreshCw } from 'lucide-react';
 
 interface Props {
   data: NetworkData;
@@ -10,8 +10,9 @@ interface Props {
   setSectors: (s: Sector[]) => void;
   filteredSectorId?: string | null;
   setFilteredSectorId: (id: string | null) => void;
-  valveStatusOverride: Record<string, 'Open' | 'Closed'>;
-  setValveStatusOverride: (m: Record<string, 'Open' | 'Closed'>) => void;
+  valveStatusOverride: Record<string, 'OPEN' | 'CLOSED'>;
+  setValveStatusOverride: (m: Record<string, 'OPEN' | 'CLOSED'>) => void;
+  onExportShp?: () => void;
 }
 
 const PALETTE = ['#3b82f6', '#22c55e', '#f97316', '#a855f7', '#ec4899', '#14b8a6', '#eab308', '#6366f1'];
@@ -30,6 +31,7 @@ export default function SectorsTab({
   data, sectors, setSectors,
   filteredSectorId, setFilteredSectorId,
   valveStatusOverride, setValveStatusOverride,
+  onExportShp,
 }: Props) {
   const [activeId, setActiveId] = useState<string | null>(sectors[0]?.id ?? null);
   const active = sectors.find(s => s.id === activeId) || null;
@@ -100,9 +102,9 @@ export default function SectorsTab({
 
   const toggleValve = (id: string) => {
     const cur = valveStatusOverride[id];
-    const next: Record<string, 'Open' | 'Closed'> = { ...valveStatusOverride };
-    if (cur === 'Closed') delete next[id];
-    else next[id] = 'Closed';
+    const next: Record<string, 'OPEN' | 'CLOSED'> = { ...valveStatusOverride };
+    if (cur === 'CLOSED') delete next[id];
+    else next[id] = 'CLOSED';
     setValveStatusOverride(next);
   };
 
@@ -113,12 +115,23 @@ export default function SectorsTab({
           <h2 className="font-semibold text-zinc-800 dark:text-zinc-100">Setores / DMC</h2>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">Cadastre setores, associe elementos e simule fechamento de válvulas.</p>
         </div>
-        <button
-          onClick={addSector}
-          className="flex items-center gap-1 text-sm bg-blue-600 text-white px-3 py-1.5 rounded-md hover:bg-blue-700"
-        >
-          <Plus className="w-4 h-4" /> Novo setor
-        </button>
+        <div className="flex items-center gap-2">
+          {onExportShp && (
+            <button
+              onClick={onExportShp}
+              className="flex items-center gap-1 text-sm border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 px-3 py-1.5 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800"
+              title="Exportar todos os setores com polígonos para SHP"
+            >
+              <RefreshCw className="w-4 h-4" /> Exportar SHP
+            </button>
+          )}
+          <button
+            onClick={addSector}
+            className="flex items-center gap-1 text-sm bg-blue-600 text-white px-3 py-1.5 rounded-md hover:bg-blue-700"
+          >
+            <Plus className="w-4 h-4" /> Novo setor
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 gap-4 min-h-0">
@@ -239,7 +252,7 @@ export default function SectorsTab({
                   </p>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                     {valves.map(v => {
-                      const isClosed = valveStatusOverride[v.id] === 'Closed';
+                      const isClosed = valveStatusOverride[v.id] === 'CLOSED';
                       return (
                         <button
                           key={v.id}

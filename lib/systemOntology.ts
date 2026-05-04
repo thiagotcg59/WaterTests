@@ -116,7 +116,7 @@ function computeSectorIndicators(data: NetworkData, sector: Sector): OntologySec
     pressao_media: pressures.length ? mean(pressures) : 0,
     pressao_minima: pressures.length ? safeMin(pressures) : 0,
     pressao_maxima: pressures.length ? safeMax(pressures) : 0,
-    vazao_estimada: vazaoEstimada,
+    vazao_estimada: Math.abs(vazaoEstimada),
     comprimento_rede: comprimentoRede,
     numero_ligacoes: ligacoes && ligacoes > 0 ? ligacoes : undefined,
   };

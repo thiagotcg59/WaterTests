@@ -12,7 +12,7 @@ const quote = (s: string) => {
 
 const unquote = (s: string) => s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s;
 
-export function applyStatusOverrides(inp: string, overrides: Record<string, 'Open' | 'Closed'>): string {
+export function applyStatusOverrides(inp: string, overrides: Record<string, 'OPEN' | 'CLOSED'>): string {
   const ids = Object.keys(overrides);
   if (ids.length === 0) return inp;
 

@@ -6,34 +6,53 @@ import {
   AlertTriangle,
   BarChart3,
   Brain,
+  ChevronDown,
+  ChevronUp,
   Database,
   Download,
+  Droplets,
   FileSpreadsheet,
   Filter,
+  Flame,
   Gauge,
+  Lightbulb,
   Layers,
   Map as MapIcon,
   Maximize2,
   Minimize2,
+  Moon,
   PlusCircle,
   Save,
   ScanSearch,
   Settings,
+  Sigma,
   Sparkles,
+  Sun,
   Trash2,
+  TrendingUp,
   Waves,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
+  ZAxis,
 } from 'recharts';
 import HydraulicMap from './HydraulicMap';
 import {
@@ -57,6 +76,17 @@ import {
   getAnomalyLabel,
   getSeverityColor,
 } from '../lib/telemetryAnalysis';
+import {
+  AiInsight,
+  computeCusum,
+  computeDurationCurve,
+  computeHourBoxplot,
+  computeLossKpis,
+  computeRiskScore,
+  computeRobustOutliers,
+  estimatePressureLeakageExponent,
+  generateAiInsights,
+} from '../lib/telemetryChartAnalysis';
 
 interface TelemetryTabProps {
   data: NetworkData;
@@ -878,7 +908,7 @@ function SensorsView(props: SensorsViewProps) {
                           ? `${latestReading.pressure.toFixed(2)} mca`
                           : '-'
                         : latestReading?.flow != null
-                          ? `${latestReading.flow.toFixed(2)} L/s`
+                          ? `${Math.abs(latestReading.flow).toFixed(2)} L/s`
                           : '-'
                     }
                   />
@@ -1165,7 +1195,7 @@ function ChartsView({ data, sectors, telemetrySensors, telemetryReadings, sector
       activeSensors.forEach((sensor) => {
         const samples = sortSamples(telemetryReadings[sensor.id] || []);
         const sample = samples.find((s) => s.hour === h);
-        const measured = sensor.type === 'pressure' ? sample?.pressure : sample?.flow;
+        const measured = sensor.type === 'pressure' ? sample?.pressure : (sample?.flow != null ? Math.abs(sample.flow) : undefined);
         const sim = (() => {
           const arr =
             sensor.type === 'pressure'
@@ -1175,7 +1205,7 @@ function ChartsView({ data, sectors, telemetrySensors, telemetryReadings, sector
           // localiza o passo simulado mais próximo da hora h
           for (let i = 0; i < arr.length; i += 1) {
             const hour = Math.round((ts.time[i] ?? 0) / 3600);
-            if (hour === h) return arr[i];
+            if (hour === h) return sensor.type === 'flow' ? Math.abs(arr[i]) : arr[i];
           }
           return undefined;
         })();
@@ -1384,6 +1414,19 @@ function ChartsView({ data, sectors, telemetrySensors, telemetryReadings, sector
             readings={telemetryReadings}
             sectorById={sectorById}
           />
+
+          {/* === Indicadores específicos de perdas === */}
+          <LossKpiPanel sensors={activeSensors} readings={telemetryReadings} />
+
+          {/* === Análises avançadas com IA === */}
+          <AdvancedAnalysisPanel
+            sensors={activeSensors}
+            allSensors={telemetrySensors}
+            readings={telemetryReadings}
+          />
+
+          {/* === Painel de insights de IA === */}
+          <AiInsightsPanel sensors={activeSensors} readings={telemetryReadings} />
         </>
       )}
     </div>
@@ -1404,19 +1447,19 @@ function NightSummary({
     const nightVals: number[] = [];
     samples.forEach((sample) => {
       if (sample.hour >= 2 && sample.hour < 4) {
-        const v = s.type === 'pressure' ? sample.pressure : sample.flow;
+        const v = s.type === 'pressure' ? sample.pressure : (sample.flow != null ? Math.abs(sample.flow) : null);
         if (typeof v === 'number') nightVals.push(v);
       }
     });
-    const all = samples.map((sm) => (s.type === 'pressure' ? sm.pressure : sm.flow)).filter(
+    const all = samples.map((sm) => (s.type === 'pressure' ? sm.pressure : (sm.flow != null ? Math.abs(sm.flow) : null))).filter(
       (v): v is number => typeof v === 'number',
     );
     const min = nightVals.length ? Math.min(...nightVals) : null;
     const max = all.length ? Math.max(...all) : null;
     let drop = 0;
     for (let i = 1; i < samples.length; i += 1) {
-      const a = s.type === 'pressure' ? samples[i - 1].pressure : samples[i - 1].flow;
-      const b = s.type === 'pressure' ? samples[i].pressure : samples[i].flow;
+      const a = s.type === 'pressure' ? samples[i - 1].pressure : (samples[i - 1].flow != null ? Math.abs(samples[i - 1].flow as number) : null);
+      const b = s.type === 'pressure' ? samples[i].pressure : (samples[i].flow != null ? Math.abs(samples[i].flow as number) : null);
       if (typeof a === 'number' && typeof b === 'number') {
         const d = a - b;
         if (d > drop) drop = d;
@@ -1464,6 +1507,790 @@ function NightSummary({
         </table>
       </div>
     </div>
+  );
+}
+
+// =================== KPIs ESPECÍFICOS DE PERDAS ===================
+
+function LossKpiPanel({
+  sensors,
+  readings,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+}) {
+  const rows = sensors.map((sensor) => {
+    const samples = readings[sensor.id] || [];
+    const kpis = computeLossKpis(sensor, samples);
+    const outliers = computeRobustOutliers(sensor, samples).outliers;
+    const cusum = computeCusum(sensor, samples).changes;
+    const risk = computeRiskScore({ sensor, kpis, outliers, cusumChanges: cusum });
+    return { sensor, kpis, risk };
+  });
+
+  if (rows.length === 0) return null;
+
+  const fmt = (v: number | null, digits = 2, suffix = '') =>
+    v === null || !Number.isFinite(v) ? '—' : `${v.toFixed(digits)}${suffix}`;
+
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3">
+      <div className="flex items-center gap-2 mb-3">
+        <Droplets className="w-4 h-4 text-cyan-500" />
+        <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          Indicadores de perdas por sensor
+        </h3>
+        <span className="text-[11px] text-zinc-500">
+          VMN, %VMN/Q̄, Hour-Day Factor, modulação noturna e tendência
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-zinc-50 dark:bg-zinc-800/40 text-zinc-500">
+            <tr>
+              <th className="px-2 py-1.5 text-left">Sensor</th>
+              <th className="px-2 py-1.5 text-right" title="Vazão Mínima Noturna ou Pressão Mín Noturna">VMN</th>
+              <th className="px-2 py-1.5 text-right" title="Razão VMN / média do sinal">VMN/Q̄</th>
+              <th className="px-2 py-1.5 text-right" title="Hour Day Factor: máx / VMN">HDF</th>
+              <th className="px-2 py-1.5 text-right">Med. noturna</th>
+              <th className="px-2 py-1.5 text-right">Med. diurna</th>
+              <th className="px-2 py-1.5 text-right" title="Diferença diurna − noturna">Δ N-D</th>
+              <th className="px-2 py-1.5 text-right" title="% horas > 50 mca (pressão) ou horas com fluxo reverso (vazão)">Anom.</th>
+              <th className="px-2 py-1.5 text-right" title="Tendência por hora">Tend.</th>
+              <th className="px-2 py-1.5 text-right" title="Risco consolidado 0-100">Risco</th>
+            </tr>
+          </thead>
+          <tbody className="text-zinc-700 dark:text-zinc-200">
+            {rows.map(({ sensor, kpis, risk }) => {
+              const isFlow = sensor.type === 'flow';
+              const vmnRatioBad = kpis.vmnRatio !== null && (
+                isFlow ? kpis.vmnRatio > 0.4 : kpis.vmnRatio > 0.85
+              );
+              const hdfBad = kpis.hdf !== null && kpis.hdf < 1.3;
+              const deltaBad =
+                kpis.pressureNightDayDelta !== null && Math.abs(kpis.pressureNightDayDelta) < 2;
+              const anomDisplay = sensor.type === 'pressure'
+                ? kpis.hoursAbovePressureLimitPct !== null
+                  ? `${kpis.hoursAbovePressureLimitPct.toFixed(0)}% > 50`
+                  : '—'
+                : kpis.reverseFlowHours !== null
+                  ? `${kpis.reverseFlowHours} h reverso`
+                  : '—';
+              const trendDisplay =
+                kpis.trendSlopePerHour === null ? '—' :
+                  kpis.trendSlopePerHour > 0
+                    ? `↗ ${kpis.trendSlopePerHour.toFixed(3)}`
+                    : `↘ ${kpis.trendSlopePerHour.toFixed(3)}`;
+              return (
+                <tr key={sensor.id} className="border-t border-zinc-200 dark:border-zinc-800">
+                  <td className="px-2 py-1.5">
+                    <div className="font-medium">{sensor.name}</div>
+                    <div className="text-[10px] text-zinc-500">{sensor.type === 'pressure' ? 'Pressão (mca)' : 'Vazão (L/s)'}</div>
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(kpis.vmn)}</td>
+                  <td className={`px-2 py-1.5 text-right font-mono ${vmnRatioBad ? 'text-red-500 font-semibold' : ''}`}>
+                    {kpis.vmnRatio !== null ? `${(kpis.vmnRatio * 100).toFixed(0)}%` : '—'}
+                  </td>
+                  <td className={`px-2 py-1.5 text-right font-mono ${hdfBad ? 'text-amber-500 font-semibold' : ''}`}>
+                    {fmt(kpis.hdf)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(kpis.nightAvg)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(kpis.dayAvg)}</td>
+                  <td className={`px-2 py-1.5 text-right font-mono ${deltaBad ? 'text-amber-500' : ''}`}>
+                    {fmt(kpis.pressureNightDayDelta)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono">{anomDisplay}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{trendDisplay}</td>
+                  <td className="px-2 py-1.5 text-right">
+                    <RiskBadge value={risk.total} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2 text-[10px] text-zinc-500 flex flex-wrap gap-x-4 gap-y-0.5">
+        <span><b>VMN/Q̄</b>: vazão saudável &lt;25%; alerta &gt;30%; perda real provável &gt;40%.</span>
+        <span><b>HDF</b>: &lt;1.3 indica vazão noturna alta (vazamento ou consumo contínuo).</span>
+        <span><b>Δ N-D</b>: pressão; valores próximos de 0 indicam falta de modulação noturna.</span>
+      </div>
+    </div>
+  );
+}
+
+function RiskBadge({ value }: { value: number }) {
+  let bg = 'bg-emerald-500';
+  let label = 'Baixo';
+  if (value >= 70) { bg = 'bg-red-500'; label = 'Crítico'; }
+  else if (value >= 50) { bg = 'bg-orange-500'; label = 'Alto'; }
+  else if (value >= 30) { bg = 'bg-amber-500'; label = 'Médio'; }
+  return (
+    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold text-white font-mono ${bg}`}>
+      {label} · {value}
+    </span>
+  );
+}
+
+// =================== ANÁLISE AVANÇADA COM IA ===================
+
+type AdvancedAnalysisMode = 'duration' | 'boxplot' | 'zscore' | 'cusum' | 'heatmap' | 'n1';
+
+const ADVANCED_MODES: Array<{
+  key: AdvancedAnalysisMode;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  description: string;
+}> = [
+  { key: 'duration', label: 'Curva de duração', icon: TrendingUp, description: '% de tempo em que cada valor é excedido — útil para ver a "calda" de pressões altas ou vazões altas.' },
+  { key: 'boxplot', label: 'Boxplot horário', icon: BarChart3, description: 'Distribuição q1/mediana/q3 em cada hora do dia — revela horários com maior variabilidade.' },
+  { key: 'zscore', label: 'Z-score robusto', icon: Sigma, description: 'Mediana ± MAD (Iglewicz-Hoaglin). Mais resistente a outliers que z-score clássico.' },
+  { key: 'cusum', label: 'CUSUM (mudança de regime)', icon: Activity, description: 'Detecta mudanças sustentadas no nível médio — manobras, rompimentos e novos vazamentos.' },
+  { key: 'heatmap', label: 'Heatmap horário', icon: Flame, description: 'Mapa de calor 24h por sensor — comparação visual do perfil de cada ponto.' },
+  { key: 'n1', label: 'Pressão × Vazão (N1)', icon: Zap, description: 'Estima o expoente N1 da relação Q = K·P^N1. N1 > 1.5 indica vazamentos em fissuras/juntas.' },
+];
+
+function AdvancedAnalysisPanel({
+  sensors,
+  allSensors,
+  readings,
+}: {
+  sensors: TelemetrySensor[];
+  allSensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+}) {
+  const [mode, setMode] = useState<AdvancedAnalysisMode>('duration');
+  const colors = ['#06b6d4', '#a855f7', '#f97316', '#22c55e', '#ef4444', '#3b82f6', '#facc15', '#ec4899'];
+
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <Brain className="w-4 h-4 text-violet-500" />
+        <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          Análise estatística avançada
+        </h3>
+        <span className="text-[11px] text-zinc-500">técnicas de IA aplicadas às séries</span>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-1 mb-3 border-b border-zinc-200 dark:border-zinc-800 pb-2">
+        {ADVANCED_MODES.map((m) => {
+          const Icon = m.icon;
+          const active = m.key === mode;
+          return (
+            <button
+              key={m.key}
+              onClick={() => setMode(m.key)}
+              title={m.description}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                active
+                  ? 'bg-violet-500 text-white'
+                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="text-[11px] text-zinc-500 italic mb-3">
+        {ADVANCED_MODES.find((m) => m.key === mode)?.description}
+      </p>
+
+      {mode === 'duration' && <DurationCurveView sensors={sensors} readings={readings} colors={colors} />}
+      {mode === 'boxplot' && <BoxplotView sensors={sensors} readings={readings} colors={colors} />}
+      {mode === 'zscore' && <ZScoreView sensors={sensors} readings={readings} colors={colors} />}
+      {mode === 'cusum' && <CusumView sensors={sensors} readings={readings} colors={colors} />}
+      {mode === 'heatmap' && <HeatmapView sensors={sensors} readings={readings} />}
+      {mode === 'n1' && <N1View sensors={sensors} allSensors={allSensors} readings={readings} />}
+    </div>
+  );
+}
+
+// --- Curva de duração ---
+function DurationCurveView({
+  sensors,
+  readings,
+  colors,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+  colors: string[];
+}) {
+  const points: Record<string, number | string | undefined>[] = [];
+  const seriesByPct: Map<number, Record<string, number>> = new Map();
+
+  sensors.forEach((sensor) => {
+    const curve = computeDurationCurve(sensor, readings[sensor.id] || []);
+    curve.forEach((p) => {
+      const bucket = Math.round(p.exceedancePct * 2) / 2; // 0.5%
+      if (!seriesByPct.has(bucket)) seriesByPct.set(bucket, {});
+      seriesByPct.get(bucket)![sensor.id] = p.value;
+    });
+  });
+
+  Array.from(seriesByPct.entries())
+    .sort((a, b) => a[0] - b[0])
+    .forEach(([pct, values]) => {
+      points.push({ pct: pct.toFixed(1), ...values });
+    });
+
+  if (points.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">Nenhum dado disponível.</p>;
+  }
+
+  return (
+    <div className="h-72">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={points}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+          <XAxis dataKey="pct" tick={{ fontSize: 10 }} label={{ value: '% do tempo excedido', position: 'insideBottom', offset: -2, fontSize: 10 }} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+          <Legend wrapperStyle={{ fontSize: 10 }} />
+          {sensors.map((s, idx) => (
+            <Line
+              key={s.id}
+              type="monotone"
+              dataKey={s.id}
+              name={s.name}
+              stroke={colors[idx % colors.length]}
+              strokeWidth={2}
+              dot={false}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// --- Boxplot horário (renderizado como "candle" — q1, q3, mediana e min/max) ---
+function BoxplotView({
+  sensors,
+  readings,
+  colors,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+  colors: string[];
+}) {
+  const sensor = sensors[0];
+  if (!sensor) return <p className="text-xs text-zinc-500 italic">Selecione pelo menos um sensor.</p>;
+
+  const stats = computeHourBoxplot(sensor, readings[sensor.id] || []);
+  if (stats.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">Sem dados horários para este sensor.</p>;
+  }
+  const data = stats.map((s) => ({
+    hora: `${s.hour}h`,
+    min: s.min,
+    q1: s.q1,
+    median: s.median,
+    q3: s.q3,
+    max: s.max,
+    iqr: s.q3 - s.q1,
+    minToQ1: s.q1 - s.min,
+    q3ToMax: s.max - s.q3,
+  }));
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2 text-[11px] text-zinc-500">
+        <span>Sensor:</span>
+        <span className="font-semibold text-zinc-700 dark:text-zinc-200">{sensor.name}</span>
+        {sensors.length > 1 && (
+          <span className="text-zinc-400">
+            (mostrando primeiro selecionado — boxplot detalhado é por sensor)
+          </span>
+        )}
+      </div>
+      <div className="h-72">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+            <XAxis dataKey="hora" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} />
+            <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            {/* Caixa: stack mín → q1 transparente, q1 → mediana, mediana → q3 */}
+            <Bar dataKey="min" stackId="box" fill="transparent" />
+            <Bar dataKey="minToQ1" stackId="box" fill={colors[0]} fillOpacity={0.15} name="Mín → Q1 (whisker)" />
+            <Bar dataKey="iqr" stackId="box" fill={colors[0]} fillOpacity={0.55} name="IQR (Q1-Q3)" />
+            <Bar dataKey="q3ToMax" stackId="box" fill={colors[0]} fillOpacity={0.15} name="Q3 → Máx (whisker)" />
+            <Line type="monotone" dataKey="median" stroke={colors[2]} strokeWidth={2} dot={{ r: 3 }} name="Mediana" />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// --- Z-score robusto ---
+function ZScoreView({
+  sensors,
+  readings,
+  colors,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+  colors: string[];
+}) {
+  const datasets = sensors.map((sensor) => {
+    const result = computeRobustOutliers(sensor, readings[sensor.id] || []);
+    return { sensor, ...result };
+  });
+
+  const merged: Record<number, Record<string, number | string>> = {};
+  datasets.forEach(({ sensor, series }) => {
+    series.forEach((p) => {
+      if (!merged[p.hour]) merged[p.hour] = { hora: `${p.hour}h` };
+      merged[p.hour][sensor.id] = p.z;
+    });
+  });
+  const points = Object.values(merged).sort((a, b) => Number(String(a.hora).replace('h', '')) - Number(String(b.hora).replace('h', '')));
+
+  if (points.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">Sem dados.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={points}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+            <XAxis dataKey="hora" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} domain={[-6, 6]} />
+            <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            <ReferenceLine y={2.5} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: '+2.5σ', fontSize: 9, fill: '#f59e0b' }} />
+            <ReferenceLine y={-2.5} stroke="#f59e0b" strokeDasharray="4 4" />
+            <ReferenceLine y={4} stroke="#ef4444" strokeDasharray="4 4" label={{ value: '+4σ', fontSize: 9, fill: '#ef4444' }} />
+            <ReferenceLine y={-4} stroke="#ef4444" strokeDasharray="4 4" />
+            {sensors.map((s, idx) => (
+              <Line
+                key={s.id}
+                type="monotone"
+                dataKey={s.id}
+                name={s.name}
+                stroke={colors[idx % colors.length]}
+                strokeWidth={2}
+                dot={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Lista de outliers */}
+      <div className="space-y-2">
+        {datasets.map(({ sensor, outliers }) => (
+          outliers.length > 0 && (
+            <div key={sensor.id} className="text-xs">
+              <span className="font-semibold text-zinc-700 dark:text-zinc-200">{sensor.name}:</span>{' '}
+              <span className="text-zinc-500">{outliers.length} ponto(s) suspeito(s) — </span>
+              {outliers.slice(0, 8).map((o) => (
+                <span
+                  key={`${o.hour}-${o.z}`}
+                  className={`inline-block mr-1 px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                    o.severity === 'severo'
+                      ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                      : o.severity === 'moderado'
+                        ? 'bg-orange-500/15 text-orange-600 dark:text-orange-400'
+                        : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                  }`}
+                >
+                  {o.hour}h: z={o.z.toFixed(1)} ({o.value.toFixed(2)})
+                </span>
+              ))}
+              {outliers.length > 8 && <span className="text-zinc-500">... +{outliers.length - 8}</span>}
+            </div>
+          )
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- CUSUM ---
+function CusumView({
+  sensors,
+  readings,
+  colors,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+  colors: string[];
+}) {
+  const sensor = sensors[0];
+  if (!sensor) return <p className="text-xs text-zinc-500 italic">Selecione pelo menos um sensor.</p>;
+
+  const result = computeCusum(sensor, readings[sensor.id] || []);
+  if (result.points.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">Sem dados.</p>;
+  }
+
+  const data = result.points.map((p) => ({
+    hora: `${p.hour}h`,
+    cusumPos: Number(p.cusumPos.toFixed(3)),
+    cusumNeg: Number(p.cusumNeg.toFixed(3)),
+    valor: p.value,
+  }));
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2 text-[11px] text-zinc-500">
+        <span>Sensor:</span>
+        <span className="font-semibold text-zinc-700 dark:text-zinc-200">{sensor.name}</span>
+        <span>·</span>
+        <span>Referência: <b>{result.reference.toFixed(2)}</b></span>
+        <span>·</span>
+        <span>{result.changes.length} mudança(s) de regime</span>
+      </div>
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+            <XAxis dataKey="hora" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} />
+            <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            <Area type="monotone" dataKey="cusumPos" name="CUSUM+" stroke={colors[4]} fill={colors[4]} fillOpacity={0.3} />
+            <Area type="monotone" dataKey="cusumNeg" name="CUSUM-" stroke={colors[0]} fill={colors[0]} fillOpacity={0.3} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+      {result.changes.length > 0 && (
+        <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">
+          <b>Pontos de mudança:</b>{' '}
+          {result.changes.map((c, i) => (
+            <span
+              key={i}
+              className={`inline-block mr-1 px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                c.direction === 'positivo'
+                  ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                  : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+              }`}
+            >
+              {c.hour}h ({c.direction === 'positivo' ? '↑' : '↓'} {c.value.toFixed(2)})
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Heatmap horário ---
+function HeatmapView({
+  sensors,
+  readings,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+}) {
+  if (sensors.length === 0) {
+    return <p className="text-xs text-zinc-500 italic">Selecione sensores.</p>;
+  }
+
+  // Calcula min/max por tipo para normalização
+  const valuesByType: Record<'pressure' | 'flow', number[]> = { pressure: [], flow: [] };
+  sensors.forEach((sensor) => {
+    (readings[sensor.id] || []).forEach((s) => {
+      const v = sensor.type === 'pressure' ? s.pressure : (typeof s.flow === 'number' ? Math.abs(s.flow) : null);
+      if (typeof v === 'number') valuesByType[sensor.type].push(v);
+    });
+  });
+
+  const ranges: Record<'pressure' | 'flow', { min: number; max: number }> = {
+    pressure: {
+      min: valuesByType.pressure.length ? Math.min(...valuesByType.pressure) : 0,
+      max: valuesByType.pressure.length ? Math.max(...valuesByType.pressure) : 1,
+    },
+    flow: {
+      min: valuesByType.flow.length ? Math.min(...valuesByType.flow) : 0,
+      max: valuesByType.flow.length ? Math.max(...valuesByType.flow) : 1,
+    },
+  };
+
+  const colorFor = (sensor: TelemetrySensor, value: number | null) => {
+    if (value === null) return 'bg-zinc-200 dark:bg-zinc-800';
+    const { min, max } = ranges[sensor.type];
+    const span = max - min;
+    const t = span > 0 ? (value - min) / span : 0.5;
+    // gradiente azul → verde → amarelo → laranja → vermelho
+    if (t < 0.2) return 'bg-blue-500/60';
+    if (t < 0.4) return 'bg-cyan-500/60';
+    if (t < 0.6) return 'bg-emerald-500/60';
+    if (t < 0.8) return 'bg-amber-500/70';
+    return 'bg-red-500/80';
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-[10px] font-mono">
+        <thead>
+          <tr>
+            <th className="text-left pr-2 text-zinc-500 sticky left-0 bg-white dark:bg-zinc-950">Sensor</th>
+            {Array.from({ length: 24 }).map((_, h) => (
+              <th key={h} className="px-0.5 text-zinc-500 text-center" style={{ minWidth: 22 }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sensors.map((sensor) => {
+            const samples = readings[sensor.id] || [];
+            const byHour = new Map<number, number[]>();
+            samples.forEach((s) => {
+              const raw = sensor.type === 'pressure' ? s.pressure : (typeof s.flow === 'number' ? Math.abs(s.flow) : null);
+              if (typeof raw !== 'number') return;
+              if (!byHour.has(s.hour)) byHour.set(s.hour, []);
+              byHour.get(s.hour)!.push(raw);
+            });
+            return (
+              <tr key={sensor.id}>
+                <td className="text-left pr-2 text-zinc-700 dark:text-zinc-200 sticky left-0 bg-white dark:bg-zinc-950 whitespace-nowrap">
+                  {sensor.name}
+                  <span className="text-zinc-500 ml-1">({sensor.type === 'pressure' ? 'P' : 'Q'})</span>
+                </td>
+                {Array.from({ length: 24 }).map((_, h) => {
+                  const vals = byHour.get(h);
+                  const value = vals && vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+                  return (
+                    <td key={h} className="px-0.5 py-0.5" title={`${sensor.name} · ${h}h: ${value !== null ? value.toFixed(2) : 'sem dado'}`}>
+                      <div className={`w-full h-5 rounded-sm ${colorFor(sensor, value)}`} />
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="mt-2 flex items-center gap-2 text-[10px] text-zinc-500">
+        <span>Escala:</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-blue-500/60" /> baixo</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-500/60" /> médio</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-500/70" /> alto</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-red-500/80" /> crítico</span>
+      </div>
+    </div>
+  );
+}
+
+// --- Pressão × Vazão (estimativa N1) ---
+function N1View({
+  sensors,
+  allSensors,
+  readings,
+}: {
+  sensors: TelemetrySensor[];
+  allSensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+}) {
+  // Encontra um sensor de pressão e um de vazão preferencialmente do mesmo setor
+  const pressureSensors = sensors.filter((s) => s.type === 'pressure');
+  const flowSensors = sensors.filter((s) => s.type === 'flow');
+
+  const pickPair = (): { pressure: TelemetrySensor; flow: TelemetrySensor } | null => {
+    for (const p of pressureSensors) {
+      const sameSector = flowSensors.find((f) => f.setorId && f.setorId === p.setorId);
+      if (sameSector) return { pressure: p, flow: sameSector };
+    }
+    if (pressureSensors[0] && flowSensors[0]) return { pressure: pressureSensors[0], flow: flowSensors[0] };
+
+    // Procura entre todos os sensores cadastrados se nenhum dos selecionados resolve
+    const allPressure = allSensors.filter((s) => s.type === 'pressure');
+    const allFlow = allSensors.filter((s) => s.type === 'flow');
+    for (const p of allPressure) {
+      const same = allFlow.find((f) => f.setorId && f.setorId === p.setorId);
+      if (same) return { pressure: p, flow: same };
+    }
+    if (allPressure[0] && allFlow[0]) return { pressure: allPressure[0], flow: allFlow[0] };
+    return null;
+  };
+
+  const pair = pickPair();
+  if (!pair) {
+    return (
+      <p className="text-xs text-zinc-500 italic">
+        É preciso pelo menos um sensor de pressão e um de vazão (idealmente no mesmo setor) para estimar N1.
+      </p>
+    );
+  }
+
+  const result = estimatePressureLeakageExponent(
+    readings[pair.pressure.id] || [],
+    readings[pair.flow.id] || [],
+  );
+
+  if (!result) {
+    return (
+      <p className="text-xs text-zinc-500 italic">
+        Não foi possível estimar N1 — são necessárias pelo menos 4 horas com pressão e vazão simultâneas válidas.
+      </p>
+    );
+  }
+
+  const sortedPairs = [...result.pairs].sort((a, b) => a.pressure - b.pressure);
+  const minP = sortedPairs[0].pressure;
+  const maxP = sortedPairs[sortedPairs.length - 1].pressure;
+  const fitPoints = Array.from({ length: 30 }, (_, i) => {
+    const p = minP + ((maxP - minP) * i) / 29;
+    return { pressure: p, fit: result.k * Math.pow(p, result.n1) };
+  });
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3 mb-3 text-xs">
+        <span className="text-zinc-500">Sensor pressão:</span>
+        <span className="font-semibold text-zinc-700 dark:text-zinc-200">{pair.pressure.name}</span>
+        <span className="text-zinc-500">vs vazão:</span>
+        <span className="font-semibold text-zinc-700 dark:text-zinc-200">{pair.flow.name}</span>
+        <span className="ml-auto px-2 py-1 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300 text-[11px]">
+          <b>N1 = {result.n1.toFixed(2)}</b> · K = {result.k.toFixed(3)} · R² = {result.r2.toFixed(2)}
+        </span>
+      </div>
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart>
+            <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+            <XAxis
+              type="number"
+              dataKey="pressure"
+              domain={['auto', 'auto']}
+              tick={{ fontSize: 10 }}
+              label={{ value: 'Pressão (mca)', position: 'insideBottom', offset: -2, fontSize: 10 }}
+            />
+            <YAxis
+              type="number"
+              dataKey="flow"
+              tick={{ fontSize: 10 }}
+              label={{ value: 'Vazão (L/s)', angle: -90, position: 'insideLeft', fontSize: 10 }}
+            />
+            <ZAxis range={[40, 40]} />
+            <Tooltip
+              cursor={{ strokeDasharray: '3 3' }}
+              contentStyle={{ fontSize: 11, borderRadius: 6 }}
+              formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : String(value))}
+            />
+            <Legend wrapperStyle={{ fontSize: 10 }} />
+            <Scatter name="Observado" data={result.pairs} fill="#06b6d4" />
+            <Line
+              data={fitPoints}
+              type="monotone"
+              dataKey="fit"
+              name={`Ajuste Q = ${result.k.toFixed(2)}·P^${result.n1.toFixed(2)}`}
+              stroke="#a855f7"
+              strokeWidth={2}
+              dot={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-[10px] text-zinc-500 mt-2 leading-relaxed">
+        Interpretação típica (UK Water Industry):
+        <b className="text-zinc-700 dark:text-zinc-200"> N1 ≈ 0.5</b> orifícios fixos;
+        <b className="text-zinc-700 dark:text-zinc-200"> N1 ≈ 1.0–1.5</b> mistura de vazamentos;
+        <b className="text-red-500"> N1 &gt; 1.5</b> rede com fissuras flexíveis (típico de alto risco).
+      </p>
+    </div>
+  );
+}
+
+// =================== PAINEL DE INSIGHTS DE IA ===================
+
+function AiInsightsPanel({
+  sensors,
+  readings,
+}: {
+  sensors: TelemetrySensor[];
+  readings: Record<string, TelemetrySample[]>;
+}) {
+  const insightsBySensor = sensors.map((sensor) => {
+    const samples = readings[sensor.id] || [];
+    const kpis = computeLossKpis(sensor, samples);
+    const outliers = computeRobustOutliers(sensor, samples).outliers;
+    const cusumChanges = computeCusum(sensor, samples).changes;
+
+    // N1 quando aplicável: emparelha com sensor de vazão do mesmo setor
+    let n1Result: { n1: number; r2: number } | null = null;
+    if (sensor.type === 'pressure' && sensor.setorId) {
+      const flowMate = sensors.find((s) => s.type === 'flow' && s.setorId === sensor.setorId);
+      if (flowMate) {
+        const r = estimatePressureLeakageExponent(
+          readings[sensor.id] || [],
+          readings[flowMate.id] || [],
+        );
+        if (r) n1Result = { n1: r.n1, r2: r.r2 };
+      }
+    }
+
+    const insights = generateAiInsights({ sensor, kpis, outliers, cusumChanges, n1: n1Result });
+    return { sensor, insights };
+  });
+
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-gradient-to-br from-violet-50/50 to-cyan-50/50 dark:from-violet-950/20 dark:to-cyan-950/20 p-3">
+      <div className="flex items-center gap-2 mb-3">
+        <Lightbulb className="w-4 h-4 text-amber-500" />
+        <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          Diagnóstico automático
+        </h3>
+        <span className="text-[11px] text-zinc-500">
+          regras + estatística aplicadas a cada sensor
+        </span>
+      </div>
+
+      {insightsBySensor.length === 0 ? (
+        <p className="text-xs text-zinc-500 italic">Selecione sensores para ver o diagnóstico.</p>
+      ) : (
+        <div className="space-y-3">
+          {insightsBySensor.map(({ sensor, insights }) => (
+            <div
+              key={sensor.id}
+              className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/50 p-2.5"
+            >
+              <div className="flex items-center gap-2 mb-2 text-xs">
+                <span className="font-semibold text-zinc-800 dark:text-zinc-100">{sensor.name}</span>
+                <span className="text-zinc-500">{sensor.type === 'pressure' ? 'Pressão' : 'Vazão'}</span>
+                <span className="text-zinc-500">·</span>
+                <span className="text-zinc-500">{insights.length} insight(s)</span>
+              </div>
+              <ul className="space-y-1">
+                {insights.map((insight, idx) => (
+                  <InsightLine key={idx} insight={insight} />
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InsightLine({ insight }: { insight: AiInsight }) {
+  const styleByLevel: Record<AiInsight['level'], { color: string; icon: React.ComponentType<{ className?: string }> }> = {
+    info: { color: 'text-zinc-600 dark:text-zinc-300', icon: Sparkles },
+    warn: { color: 'text-amber-600 dark:text-amber-400', icon: AlertTriangle },
+    critical: { color: 'text-red-600 dark:text-red-400', icon: Flame },
+    positive: { color: 'text-emerald-600 dark:text-emerald-400', icon: TrendingUp },
+  };
+  const { color, icon: Icon } = styleByLevel[insight.level];
+  return (
+    <li className={`flex items-start gap-2 text-[11px] leading-relaxed ${color}`}>
+      <Icon className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+      <span>
+        <span className="text-[9px] uppercase tracking-wider mr-1 opacity-60">[{insight.category}]</span>
+        {insight.text}
+      </span>
+    </li>
   );
 }
 
@@ -1534,6 +2361,8 @@ function AiAnalysisView(props: AiAnalysisViewProps) {
 
   const [sectorFilter, setSectorFilter] = useState<string>('all');
   const [severityFilter, setSeverityFilter] = useState<'all' | 'normal' | 'baixa' | 'media' | 'alta' | 'critica'>('all');
+  const [showConfig, setShowConfig] = useState<boolean>(false);
+  const [periodFocus, setPeriodFocus] = useState<'night' | 'day' | 'both'>('both');
 
   const filteredSensors = useMemo(() => {
     return analysisResult.sensors.filter((s) => {
@@ -1603,144 +2432,192 @@ function AiAnalysisView(props: AiAnalysisViewProps) {
 
   return (
     <div className="h-full overflow-auto p-1 space-y-3">
-      {/* Painel de configurações + indicadores globais */}
-      <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-3">
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <Settings className="w-4 h-4 text-cyan-500" />
+      {/* Top bar: KPIs compactos + ações + janelas */}
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3">
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-cyan-500" />
             <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-              Configuração da IA
+              Indicadores globais
             </h3>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <NumberConfig
-              label="Janela noturna (início)"
-              value={analysisOptions.nightStartHour}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, nightStartHour: v })}
-            />
-            <NumberConfig
-              label="Janela noturna (fim)"
-              value={analysisOptions.nightEndHour}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, nightEndHour: v })}
-            />
-            <NumberConfig
-              label="Pressão máx. OK (mca)"
-              value={analysisOptions.pressureMaxOk}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, pressureMaxOk: v })}
-            />
-            <NumberConfig
-              label="Pressão mín. OK (mca)"
-              value={analysisOptions.pressureMinOk}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, pressureMinOk: v })}
-            />
-            <NumberConfig
-              label="Alerta noturna (mca)"
-              value={analysisOptions.pressureNightAlert}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, pressureNightAlert: v })}
-            />
-            <NumberConfig
-              label="Limite divergência"
-              value={analysisOptions.divergenceThreshold}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, divergenceThreshold: v })}
-            />
-            <NumberConfig
-              label="Z-score limite"
-              value={analysisOptions.zScoreThreshold}
-              step={0.1}
-              onChange={(v) => setAnalysisOptions({ ...analysisOptions, zScoreThreshold: v })}
-            />
-            <NumberConfig
-              label="% horas para divergência persistente"
-              value={analysisOptions.divergencePersistencePct}
-              onChange={(v) =>
-                setAnalysisOptions({ ...analysisOptions, divergencePersistencePct: v })
-              }
-            />
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-cyan-500" />
-              <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                Indicadores globais
-              </h3>
-            </div>
+          <span className="inline-flex items-center gap-1 text-[11px] text-violet-600 dark:text-violet-300 font-mono">
+            <Moon className="w-3 h-3" /> Madrugada {analysisOptions.nightStartHour}h–{analysisOptions.nightEndHour}h
+          </span>
+          <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-300 font-mono">
+            <Sun className="w-3 h-3" /> Consumo {analysisOptions.dayStartHour}h–{analysisOptions.dayEndHour}h
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setShowConfig(!showConfig)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-700 dark:text-zinc-200 hover:border-cyan-400"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              {showConfig ? 'Ocultar config.' : 'Configuração'}
+              {showConfig ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
             <button
               onClick={downloadReport}
               className="inline-flex items-center gap-1.5 rounded-md bg-cyan-600 hover:bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-white"
             >
               <Download className="w-3.5 h-3.5" />
-              Gerar Relatório IA
+              Relatório IA
             </button>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <KpiCard label="Sensores" value={String(analysisResult.sensors.length)} icon={Database} accent="text-cyan-600" />
-            <KpiCard
-              label="Anomalias"
-              value={String(analysisResult.totalAnomalies)}
-              icon={AlertTriangle}
-              accent="text-orange-600"
-            />
-            <KpiCard
-              label="Críticos"
-              value={String(analysisResult.criticalSensors)}
-              icon={Brain}
-              accent="text-red-600"
-            />
-            <KpiCard
-              label="MAE médio"
-              value={analysisResult.averageMae !== null ? analysisResult.averageMae.toFixed(2) : '—'}
-              icon={Gauge}
-              accent="text-violet-600"
-            />
-          </div>
-          {(analysisResult.globalDiagnostic.length > 0 ||
-            analysisResult.globalRecommendations.length > 0) && (
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-              {analysisResult.globalDiagnostic.length > 0 && (
-                <div className="rounded-md border border-cyan-300 dark:border-cyan-700 bg-cyan-50 dark:bg-cyan-950/20 p-2.5">
-                  <div className="text-[10px] uppercase tracking-wider text-cyan-700 dark:text-cyan-300 font-semibold mb-1">
-                    Diagnóstico
-                  </div>
-                  <ul className="space-y-1 text-cyan-900 dark:text-cyan-100">
-                    {analysisResult.globalDiagnostic.map((d, i) => (
-                      <li key={i} className="leading-relaxed">• {d}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {analysisResult.globalRecommendations.length > 0 && (
-                <div className="rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/20 p-2.5">
-                  <div className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-semibold mb-1">
-                    Recomendações
-                  </div>
-                  <ul className="space-y-1 text-emerald-900 dark:text-emerald-100">
-                    {analysisResult.globalRecommendations.map((d, i) => (
-                      <li key={i} className="leading-relaxed">• {d}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
         </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+          <KpiCard label="Sensores" value={String(analysisResult.sensors.length)} icon={Database} accent="text-cyan-600" />
+          <KpiCard
+            label="Anomalias"
+            value={String(analysisResult.totalAnomalies)}
+            icon={AlertTriangle}
+            accent="text-orange-600"
+          />
+          <KpiCard
+            label="Críticos"
+            value={String(analysisResult.criticalSensors)}
+            icon={Brain}
+            accent="text-red-600"
+          />
+          <KpiCard
+            label="MAE médio"
+            value={analysisResult.averageMae !== null ? analysisResult.averageMae.toFixed(2) : '—'}
+            icon={Gauge}
+            accent="text-violet-600"
+          />
+          <KpiCard
+            label="MAE noturno"
+            value={analysisResult.averageNightMae !== null ? analysisResult.averageNightMae.toFixed(2) : '—'}
+            icon={Moon}
+            accent="text-violet-600"
+          />
+          <KpiCard
+            label="MAE consumo"
+            value={analysisResult.averageDayMae !== null ? analysisResult.averageDayMae.toFixed(2) : '—'}
+            icon={Sun}
+            accent="text-amber-600"
+          />
+        </div>
+
+        {showConfig && (
+          <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <NumberConfig
+                label="Madrugada (início)"
+                value={analysisOptions.nightStartHour}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, nightStartHour: v })}
+              />
+              <NumberConfig
+                label="Madrugada (fim)"
+                value={analysisOptions.nightEndHour}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, nightEndHour: v })}
+              />
+              <NumberConfig
+                label="Consumo (início)"
+                value={analysisOptions.dayStartHour}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, dayStartHour: v })}
+              />
+              <NumberConfig
+                label="Consumo (fim)"
+                value={analysisOptions.dayEndHour}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, dayEndHour: v })}
+              />
+              <NumberConfig
+                label="Pressão máx. OK"
+                value={analysisOptions.pressureMaxOk}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, pressureMaxOk: v })}
+              />
+              <NumberConfig
+                label="Pressão mín. OK"
+                value={analysisOptions.pressureMinOk}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, pressureMinOk: v })}
+              />
+              <NumberConfig
+                label="Alerta noturna"
+                value={analysisOptions.pressureNightAlert}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, pressureNightAlert: v })}
+              />
+              <NumberConfig
+                label="Limite divergência"
+                value={analysisOptions.divergenceThreshold}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, divergenceThreshold: v })}
+              />
+              <NumberConfig
+                label="Z-score limite"
+                value={analysisOptions.zScoreThreshold}
+                step={0.1}
+                onChange={(v) => setAnalysisOptions({ ...analysisOptions, zScoreThreshold: v })}
+              />
+              <NumberConfig
+                label="% divergência persistente"
+                value={analysisOptions.divergencePersistencePct}
+                onChange={(v) =>
+                  setAnalysisOptions({ ...analysisOptions, divergencePersistencePct: v })
+                }
+              />
+            </div>
+          </div>
+        )}
+
+        {(analysisResult.globalDiagnostic.length > 0 ||
+          analysisResult.globalRecommendations.length > 0) && (
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+            {analysisResult.globalDiagnostic.length > 0 && (
+              <div className="rounded-md border border-cyan-300 dark:border-cyan-700 bg-cyan-50 dark:bg-cyan-950/20 p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-cyan-700 dark:text-cyan-300 font-semibold mb-1">
+                  Diagnóstico
+                </div>
+                <ul className="space-y-1 text-cyan-900 dark:text-cyan-100">
+                  {analysisResult.globalDiagnostic.map((d, i) => (
+                    <li key={i} className="leading-relaxed">• {d}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {analysisResult.globalRecommendations.length > 0 && (
+              <div className="rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/20 p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-semibold mb-1">
+                  Recomendações
+                </div>
+                <ul className="space-y-1 text-emerald-900 dark:text-emerald-100">
+                  {analysisResult.globalRecommendations.map((d, i) => (
+                    <li key={i} className="leading-relaxed">• {d}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Filtros + Mapa compacto + Ranking */}
-      <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-3">
+      {/* HERO: Mínima Noturna × Período de Consumo */}
+      <PeriodComparisonSection
+        sensors={analysisResult.sensors}
+        nightStart={analysisOptions.nightStartHour}
+        nightEnd={analysisOptions.nightEndHour}
+        dayStart={analysisOptions.dayStartHour}
+        dayEnd={analysisOptions.dayEndHour}
+        pressureNightAlert={analysisOptions.pressureNightAlert}
+        periodFocus={periodFocus}
+        setPeriodFocus={setPeriodFocus}
+        onSelectSensor={setSelectedSensorId}
+        selectedSensorId={selectedSensorId}
+      />
+
+      {/* Mapa compacto + Ranking */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-3">
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <MapIcon className="w-4 h-4 text-cyan-500" />
               <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                Mapa inteligente
+                Mapa por severidade
               </h3>
             </div>
-            <span className="text-[11px] text-zinc-500">cor por severidade</span>
+            <span className="text-[11px] text-zinc-500">cor = anomalia</span>
           </div>
-          <div className="h-[320px] rounded-lg border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+          <div className="h-[260px] rounded-lg border border-zinc-200 dark:border-zinc-800 overflow-hidden">
             <HydraulicMap
               data={data}
               sectors={sectors}
@@ -1759,7 +2636,7 @@ function AiAnalysisView(props: AiAnalysisViewProps) {
           <div className="flex items-center gap-2 mb-2">
             <Brain className="w-4 h-4 text-cyan-500" />
             <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-              Ranking de criticidade
+              Ranking medido × simulado por período
             </h3>
           </div>
           <div className="overflow-x-auto">
@@ -1768,9 +2645,13 @@ function AiAnalysisView(props: AiAnalysisViewProps) {
                 <tr>
                   <th className="px-2 py-1.5 text-left">Sensor</th>
                   <th className="px-2 py-1.5 text-left">Setor</th>
-                  <th className="px-2 py-1.5 text-right">MAE</th>
-                  <th className="px-2 py-1.5 text-right">Δ máx.</th>
-                  <th className="px-2 py-1.5 text-right">h crítico</th>
+                  <th className="px-2 py-1.5 text-right" title="MAE noturno">
+                    <Moon className="w-3 h-3 inline text-violet-500" /> MAE
+                  </th>
+                  <th className="px-2 py-1.5 text-right" title="MAE consumo">
+                    <Sun className="w-3 h-3 inline text-amber-500" /> MAE
+                  </th>
+                  <th className="px-2 py-1.5 text-right">P̄ noturna</th>
                   <th className="px-2 py-1.5 text-right">Severidade</th>
                   <th className="px-2 py-1.5 text-right">Score</th>
                 </tr>
@@ -1786,12 +2667,14 @@ function AiAnalysisView(props: AiAnalysisViewProps) {
                   >
                     <td className="px-2 py-1.5 font-medium">{s.sensorName}</td>
                     <td className="px-2 py-1.5">{s.setorNome ?? '—'}</td>
-                    <td className="px-2 py-1.5 text-right font-mono">{s.mae?.toFixed(2) ?? '—'}</td>
-                    <td className="px-2 py-1.5 text-right font-mono">
-                      {s.maxAbsDiff !== null ? s.maxAbsDiff.toFixed(2) : '—'}
+                    <td className="px-2 py-1.5 text-right font-mono text-violet-600 dark:text-violet-300">
+                      {s.nightMae !== null ? s.nightMae.toFixed(2) : '—'}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono text-amber-600 dark:text-amber-300">
+                      {s.dayMae !== null ? s.dayMae.toFixed(2) : '—'}
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono">
-                      {s.hourMaxDivergence !== null ? `${s.hourMaxDivergence}h` : '—'}
+                      {s.nightAvgMeasured !== null ? s.nightAvgMeasured.toFixed(2) : '—'}
                     </td>
                     <td className="px-2 py-1.5 text-right">
                       <SeverityPill severity={s.severity} />
@@ -1959,6 +2842,7 @@ function SeverityPill({ severity }: { severity: AnomalyEvent['severity'] | 'norm
 }
 
 function SensorAnalysisCard({ metric }: { metric: SensorMetrics }) {
+  const unit = metric.sensorType === 'pressure' ? 'mca' : 'L/s';
   return (
     <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/40 p-3">
       <div className="flex items-center gap-2 mb-1.5">
@@ -1970,13 +2854,40 @@ function SensorAnalysisCard({ metric }: { metric: SensorMetrics }) {
           <SeverityPill severity={metric.severity} />
         </span>
       </div>
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <PeriodMiniCard
+          icon={Moon}
+          label={`Madrugada ${metric.nightWindowStart}h–${metric.nightWindowEnd}h`}
+          accent="text-violet-600 dark:text-violet-300"
+          bg="bg-violet-50 dark:bg-violet-950/20 border-violet-200 dark:border-violet-800"
+          measuredAvg={metric.nightAvgMeasured}
+          simulatedAvg={metric.nightAvgSimulated}
+          measuredMin={metric.nightMinMeasured}
+          mae={metric.nightMae}
+          maxDiff={metric.nightMaxAbsDiff}
+          hourMax={metric.nightHourMaxDiff}
+          paired={metric.nightPairedHours}
+          unit={unit}
+        />
+        <PeriodMiniCard
+          icon={Sun}
+          label={`Consumo ${metric.dayWindowStart}h–${metric.dayWindowEnd}h`}
+          accent="text-amber-600 dark:text-amber-300"
+          bg="bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800"
+          measuredAvg={metric.dayAvgMeasured}
+          simulatedAvg={metric.dayAvgSimulated}
+          measuredMin={metric.dayMinMeasured}
+          mae={metric.dayMae}
+          maxDiff={metric.dayMaxAbsDiff}
+          hourMax={metric.dayHourMaxDiff}
+          paired={metric.dayPairedHours}
+          unit={unit}
+        />
+      </div>
       <div className="grid grid-cols-3 gap-1 text-[10px] text-zinc-500 mb-2">
-        <span>MAE: <b className="text-zinc-700 dark:text-zinc-200">{metric.mae?.toFixed(2) ?? '—'}</b></span>
+        <span>MAE total: <b className="text-zinc-700 dark:text-zinc-200">{metric.mae?.toFixed(2) ?? '—'}</b></span>
         <span>%Erro: <b className="text-zinc-700 dark:text-zinc-200">{metric.meanPctError?.toFixed(1) ?? '—'}%</b></span>
         <span>Score: <b className="text-zinc-700 dark:text-zinc-200">{metric.riskScore}</b></span>
-        <span>Δ máx: <b className="text-zinc-700 dark:text-zinc-200">{metric.maxAbsDiff?.toFixed(2) ?? '—'}</b></span>
-        <span>h crítico: <b className="text-zinc-700 dark:text-zinc-200">{metric.hourMaxDivergence !== null ? `${metric.hourMaxDivergence}h` : '—'}</b></span>
-        <span>P̄ noturna: <b className="text-zinc-700 dark:text-zinc-200">{metric.nightAvgMeasured?.toFixed(2) ?? '—'}</b></span>
       </div>
       {metric.diagnostic.length > 0 && (
         <div className="text-[11px] text-zinc-700 dark:text-zinc-300 leading-relaxed border-t border-zinc-200 dark:border-zinc-800 pt-1.5">
@@ -1990,6 +2901,418 @@ function SensorAnalysisCard({ metric }: { metric: SensorMetrics }) {
           {metric.recommendations.map((d, i) => (
             <div key={i}>↳ {d}</div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeriodMiniCard({
+  icon: Icon,
+  label,
+  accent,
+  bg,
+  measuredAvg,
+  simulatedAvg,
+  measuredMin,
+  mae,
+  maxDiff,
+  hourMax,
+  paired,
+  unit,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  accent: string;
+  bg: string;
+  measuredAvg: number | null;
+  simulatedAvg: number | null;
+  measuredMin: number | null;
+  mae: number | null;
+  maxDiff: number | null;
+  hourMax: number | null;
+  paired: number;
+  unit: string;
+}) {
+  return (
+    <div className={`rounded-md border px-2 py-1.5 ${bg}`}>
+      <div className={`flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider mb-1 ${accent}`}>
+        <Icon className="w-3 h-3" />
+        {label}
+      </div>
+      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] text-zinc-500">
+        <span>Med: <b className="text-zinc-700 dark:text-zinc-200">{measuredAvg?.toFixed(2) ?? '—'}</b></span>
+        <span>Sim: <b className="text-zinc-700 dark:text-zinc-200">{simulatedAvg?.toFixed(2) ?? '—'}</b></span>
+        <span>Mín med: <b className="text-zinc-700 dark:text-zinc-200">{measuredMin?.toFixed(2) ?? '—'}</b></span>
+        <span>MAE: <b className="text-zinc-700 dark:text-zinc-200">{mae?.toFixed(2) ?? '—'}</b></span>
+        <span>Δ máx: <b className="text-zinc-700 dark:text-zinc-200">{maxDiff?.toFixed(2) ?? '—'}</b></span>
+        <span>h máx: <b className="text-zinc-700 dark:text-zinc-200">{hourMax !== null ? `${hourMax}h` : '—'}</b></span>
+      </div>
+      <div className="text-[10px] text-zinc-400 mt-0.5">
+        {paired} h pareada{paired !== 1 ? 's' : ''} · unid. {unit}
+      </div>
+    </div>
+  );
+}
+
+function PeriodComparisonSection({
+  sensors,
+  nightStart,
+  nightEnd,
+  dayStart,
+  dayEnd,
+  pressureNightAlert,
+  periodFocus,
+  setPeriodFocus,
+  onSelectSensor,
+  selectedSensorId,
+}: {
+  sensors: SensorMetrics[];
+  nightStart: number;
+  nightEnd: number;
+  dayStart: number;
+  dayEnd: number;
+  pressureNightAlert: number;
+  periodFocus: 'night' | 'day' | 'both';
+  setPeriodFocus: (v: 'night' | 'day' | 'both') => void;
+  onSelectSensor: (id: string | null) => void;
+  selectedSensorId: string | null;
+}) {
+  const pressureSensors = sensors.filter((s) => s.sensorType === 'pressure');
+  const flowSensors = sensors.filter((s) => s.sensorType === 'flow');
+
+  // Agregados globais por período (apenas sensores com dados pareados)
+  const nightAgg = aggregatePeriod(sensors, 'night');
+  const dayAgg = aggregatePeriod(sensors, 'day');
+
+  // Bar chart: medido vs simulado por período (média por sensor)
+  const barData = sensors.map((s) => ({
+    sensor: s.sensorName,
+    'Med. madrugada': s.nightAvgMeasured ?? 0,
+    'Sim. madrugada': s.nightAvgSimulated ?? 0,
+    'Med. consumo': s.dayAvgMeasured ?? 0,
+    'Sim. consumo': s.dayAvgSimulated ?? 0,
+    sensorId: s.sensorId,
+  }));
+
+  // MAE chart: noturno vs consumo
+  const maeData = sensors.map((s) => ({
+    sensor: s.sensorName,
+    'MAE madrugada': s.nightMae ?? 0,
+    'MAE consumo': s.dayMae ?? 0,
+    sensorId: s.sensorId,
+  }));
+
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/70 p-3 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <ScanSearch className="w-4 h-4 text-cyan-500" />
+        <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          Mínima Noturna × Período de Consumo
+        </h3>
+        <span className="text-[11px] text-zinc-500">
+          Comparação medido × simulado entre madrugada e consumo, com agregados por período.
+        </span>
+        <div className="ml-auto inline-flex rounded-md border border-zinc-300 dark:border-zinc-700 overflow-hidden">
+          {(['both', 'night', 'day'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPeriodFocus(p)}
+              className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                periodFocus === p
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+              }`}
+            >
+              {p === 'both' ? 'Ambos' : p === 'night' ? 'Madrugada' : 'Consumo'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Cards globais por período */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {(periodFocus === 'both' || periodFocus === 'night') && (
+          <PeriodHeroCard
+            icon={Moon}
+            title={`Madrugada (${nightStart}h–${nightEnd}h)`}
+            description="Período de menor consumo — ideal para detectar perdas reais e excesso de pressão."
+            accent="violet"
+            agg={nightAgg}
+            extraNote={
+              nightAgg.avgMeasured !== null && nightAgg.avgMeasured > pressureNightAlert
+                ? `Pressão média noturna ${nightAgg.avgMeasured.toFixed(1)} mca acima do alerta (${pressureNightAlert} mca).`
+                : null
+            }
+          />
+        )}
+        {(periodFocus === 'both' || periodFocus === 'day') && (
+          <PeriodHeroCard
+            icon={Sun}
+            title={`Consumo (${dayStart}h–${dayEnd}h)`}
+            description="Período de maior demanda — divergência aqui costuma indicar erro de demanda ou perda de carga."
+            accent="amber"
+            agg={dayAgg}
+          />
+        )}
+      </div>
+
+      {/* Gráfico medido × simulado por período */}
+      {sensors.length > 0 && (
+        <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">
+              Médias medido × simulado por sensor (mca / L/s)
+            </span>
+            <span className="text-[10px] text-zinc-400">clique em uma barra para selecionar o sensor</span>
+          </div>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={barData}
+                onClick={(state) => {
+                  const payload = (state as unknown as { activePayload?: Array<{ payload?: { sensorId?: string } }> })?.activePayload?.[0]?.payload;
+                  if (payload?.sensorId) onSelectSensor(payload.sensorId);
+                }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+                <XAxis dataKey="sensor" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+                <Legend wrapperStyle={{ fontSize: 10 }} />
+                {(periodFocus === 'both' || periodFocus === 'night') && (
+                  <>
+                    <Bar dataKey="Med. madrugada" fill="#a855f7" />
+                    <Bar dataKey="Sim. madrugada" fill="#c4b5fd" />
+                  </>
+                )}
+                {(periodFocus === 'both' || periodFocus === 'day') && (
+                  <>
+                    <Bar dataKey="Med. consumo" fill="#f59e0b" />
+                    <Bar dataKey="Sim. consumo" fill="#fcd34d" />
+                  </>
+                )}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Gráfico MAE comparativo */}
+      {sensors.length > 0 && (
+        <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">
+              MAE por período — onde o modelo mais erra
+            </span>
+            <span className="text-[10px] text-zinc-400">
+              {pressureSensors.length} pressão · {flowSensors.length} vazão
+            </span>
+          </div>
+          <div className="h-44">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={maeData}
+                onClick={(state) => {
+                  const payload = (state as unknown as { activePayload?: Array<{ payload?: { sensorId?: string } }> })?.activePayload?.[0]?.payload;
+                  if (payload?.sensorId) onSelectSensor(payload.sensorId);
+                }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" opacity={0.2} />
+                <XAxis dataKey="sensor" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+                <Legend wrapperStyle={{ fontSize: 10 }} />
+                <Bar dataKey="MAE madrugada" fill="#a855f7">
+                  {maeData.map((d) => (
+                    <Cell
+                      key={d.sensorId}
+                      fill={d.sensorId === selectedSensorId ? '#7e22ce' : '#a855f7'}
+                    />
+                  ))}
+                </Bar>
+                <Bar dataKey="MAE consumo" fill="#f59e0b">
+                  {maeData.map((d) => (
+                    <Cell
+                      key={d.sensorId}
+                      fill={d.sensorId === selectedSensorId ? '#b45309' : '#f59e0b'}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface PeriodAgg {
+  avgMeasured: number | null;
+  avgSimulated: number | null;
+  avgMae: number | null;
+  maxAbsDiff: number | null;
+  worstSensorId: string | null;
+  worstSensorName: string | null;
+  worstHour: number | null;
+  minMeasured: number | null;
+  minMeasuredSensor: string | null;
+  totalPaired: number;
+  sensorsWithData: number;
+}
+
+function aggregatePeriod(sensors: SensorMetrics[], period: 'night' | 'day'): PeriodAgg {
+  const measuredAvgs: number[] = [];
+  const simulatedAvgs: number[] = [];
+  const maes: number[] = [];
+  let maxAbs = -Infinity;
+  let worstSensorId: string | null = null;
+  let worstSensorName: string | null = null;
+  let worstHour: number | null = null;
+  let minMeasured = Infinity;
+  let minMeasuredSensor: string | null = null;
+  let totalPaired = 0;
+  let sensorsWithData = 0;
+
+  sensors.forEach((s) => {
+    const measured = period === 'night' ? s.nightAvgMeasured : s.dayAvgMeasured;
+    const simulated = period === 'night' ? s.nightAvgSimulated : s.dayAvgSimulated;
+    const mae = period === 'night' ? s.nightMae : s.dayMae;
+    const maxD = period === 'night' ? s.nightMaxAbsDiff : s.dayMaxAbsDiff;
+    const hourMax = period === 'night' ? s.nightHourMaxDiff : s.dayHourMaxDiff;
+    const minM = period === 'night' ? s.nightMinMeasured : s.dayMinMeasured;
+    const paired = period === 'night' ? s.nightPairedHours : s.dayPairedHours;
+
+    if (typeof measured === 'number') measuredAvgs.push(measured);
+    if (typeof simulated === 'number') simulatedAvgs.push(simulated);
+    if (typeof mae === 'number') maes.push(mae);
+    if (paired > 0) sensorsWithData += 1;
+    totalPaired += paired;
+
+    if (typeof maxD === 'number' && maxD > maxAbs) {
+      maxAbs = maxD;
+      worstSensorId = s.sensorId;
+      worstSensorName = s.sensorName;
+      worstHour = hourMax;
+    }
+    if (typeof minM === 'number' && minM < minMeasured) {
+      minMeasured = minM;
+      minMeasuredSensor = s.sensorName;
+    }
+  });
+
+  const avg = (arr: number[]): number | null =>
+    arr.length === 0 ? null : arr.reduce((a, b) => a + b, 0) / arr.length;
+
+  return {
+    avgMeasured: avg(measuredAvgs),
+    avgSimulated: avg(simulatedAvgs),
+    avgMae: avg(maes),
+    maxAbsDiff: Number.isFinite(maxAbs) ? maxAbs : null,
+    worstSensorId,
+    worstSensorName,
+    worstHour,
+    minMeasured: Number.isFinite(minMeasured) ? minMeasured : null,
+    minMeasuredSensor,
+    totalPaired,
+    sensorsWithData,
+  };
+}
+
+function PeriodHeroCard({
+  icon: Icon,
+  title,
+  description,
+  accent,
+  agg,
+  extraNote,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  accent: 'violet' | 'amber';
+  agg: PeriodAgg;
+  extraNote?: string | null;
+}) {
+  const colorMap = {
+    violet: {
+      border: 'border-violet-300 dark:border-violet-700',
+      bg: 'bg-violet-50 dark:bg-violet-950/20',
+      text: 'text-violet-700 dark:text-violet-300',
+      strong: 'text-violet-900 dark:text-violet-100',
+    },
+    amber: {
+      border: 'border-amber-300 dark:border-amber-700',
+      bg: 'bg-amber-50 dark:bg-amber-950/20',
+      text: 'text-amber-700 dark:text-amber-300',
+      strong: 'text-amber-900 dark:text-amber-100',
+    },
+  }[accent];
+
+  const fmt = (v: number | null, digits = 2) =>
+    v === null || !Number.isFinite(v) ? '—' : v.toFixed(digits);
+
+  return (
+    <div className={`rounded-lg border p-3 ${colorMap.border} ${colorMap.bg}`}>
+      <div className={`flex items-center gap-2 mb-1 ${colorMap.text}`}>
+        <Icon className="w-4 h-4" />
+        <span className="text-sm font-semibold">{title}</span>
+      </div>
+      <p className={`text-[11px] mb-2 ${colorMap.strong} opacity-80 leading-relaxed`}>
+        {description}
+      </p>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">Média medida</div>
+          <div className={`font-mono font-semibold ${colorMap.strong}`}>
+            {fmt(agg.avgMeasured)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">Média simulada</div>
+          <div className={`font-mono font-semibold ${colorMap.strong}`}>
+            {fmt(agg.avgSimulated)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">MAE médio</div>
+          <div className={`font-mono font-semibold ${colorMap.strong}`}>
+            {fmt(agg.avgMae)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">Δ máx. absoluta</div>
+          <div className={`font-mono font-semibold ${colorMap.strong}`}>
+            {fmt(agg.maxAbsDiff)}
+            {agg.worstHour !== null && (
+              <span className="text-[10px] text-zinc-500 ml-1">@{agg.worstHour}h</span>
+            )}
+          </div>
+        </div>
+        <div className="col-span-2">
+          <div className="text-[9px] uppercase tracking-wider text-zinc-500">Mínima medida</div>
+          <div className={`font-mono font-semibold ${colorMap.strong}`}>
+            {fmt(agg.minMeasured)}
+            {agg.minMeasuredSensor && (
+              <span className="text-[10px] text-zinc-500 ml-1">{agg.minMeasuredSensor}</span>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 pt-2 border-t border-zinc-200/50 dark:border-zinc-700/50 text-[10px] text-zinc-500 flex items-center justify-between">
+        <span>
+          {agg.sensorsWithData} sensor{agg.sensorsWithData !== 1 ? 'es' : ''} · {agg.totalPaired} h pareadas
+        </span>
+        {agg.worstSensorName && (
+          <span className="text-zinc-500">
+            Maior divergência: <b className={colorMap.strong}>{agg.worstSensorName}</b>
+          </span>
+        )}
+      </div>
+      {extraNote && (
+        <div className="mt-2 text-[11px] text-red-700 dark:text-red-300 leading-relaxed border-t border-zinc-200/50 dark:border-zinc-700/50 pt-2">
+          ⚠ {extraNote}
         </div>
       )}
     </div>

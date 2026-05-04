@@ -3,6 +3,8 @@ import { Settings2, X, RefreshCcw } from 'lucide-react';
 interface Props {
   demandM3Day: number;
   onDemandM3DayChange: (value: number) => void;
+  targetCount: number;
+  onTargetCountChange: (value: number) => void;
   spacingMeters: number;
   onSpacingMetersChange: (value: number) => void;
   onCreateMeters: () => void;
@@ -21,6 +23,8 @@ function safeNumber(value: number): string {
 export default function CustomerMetersPanel({
   demandM3Day,
   onDemandM3DayChange,
+  targetCount,
+  onTargetCountChange,
   spacingMeters,
   onSpacingMetersChange,
   onCreateMeters,
@@ -56,6 +60,21 @@ export default function CustomerMetersPanel({
           />
           <p className="text-xs text-zinc-500">
             Equivale a {safeNumber(demandM3Day * 30)} m3/mes por unidade.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-sm text-zinc-500 dark:text-zinc-400">Número de customer meters</label>
+          <input
+            type="number"
+            min={0}
+            step="1"
+            value={targetCount}
+            onChange={(e) => onTargetCountChange(Math.max(0, Math.floor(Number(e.target.value))))}
+            className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 outline-none focus:border-amber-500"
+          />
+          <p className="text-xs text-zinc-500">
+            Use 0 para gerar automaticamente pelo distanciamento.
           </p>
         </div>
 

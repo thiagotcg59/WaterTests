@@ -160,7 +160,7 @@ function buildNetworkSummary(
     pressaoMedia: typeof stats.pressureAvg === 'number' ? round2(stats.pressureAvg) : undefined,
     pressaoMax: typeof stats.pressureMax === 'number' ? round2(stats.pressureMax) : undefined,
     velocidadeMedia: typeof stats.avgVelocity === 'number' ? round2(stats.avgVelocity) : undefined,
-    vazaoTotalLps: round2(totalDemand),
+    vazaoTotalLps: Math.abs(round2(totalDemand)),
     nosComPressaoBaixa: nosBaixa,
     nosComPressaoAlta: nosAlta,
   };

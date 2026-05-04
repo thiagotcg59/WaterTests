@@ -23,7 +23,7 @@ interface Props {
   data: NetworkData;
   sectors: Sector[];
   customerMeters: CustomerMeter[];
-  valveStatusOverride: Record<string, 'Open' | 'Closed'>;
+  valveStatusOverride: Record<string, 'OPEN' | 'CLOSED'>;
   onPipeSelected?: (pipeId: string) => void;
   onHighlightChanged?: (ids: Set<string> | null, color?: string) => void;
 }

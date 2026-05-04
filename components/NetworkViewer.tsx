@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { ReactFlow, Background, Controls, Node as FlowNode, Edge as FlowEdge, MarkerType, Handle, Position, ReactFlowInstance, Panel } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { NetworkData, ElementType, CustomerMeter } from '../types/epanet';
@@ -30,6 +30,19 @@ interface NetworkViewerProps {
   customerMeters?: CustomerMeter[];
   showCustomerMeters?: boolean;
   nodeAnomalyById?: Record<string, { status: 'normal' | 'alerta' | 'critico'; minNight?: number; mean?: number; classification?: string }>;
+  mapTheme?: 'light' | 'dark';
+  showNodes?: boolean;
+  showLinks?: boolean;
+  showReservoirs?: boolean;
+  showTanks?: boolean;
+  showPumps?: boolean;
+  showValves?: boolean;
+  showLabels?: boolean;
+  showFlowArrows?: boolean;
+  baseLineWidth?: number;
+  linkOpacity?: number;
+  symbolScale?: number;
+  fitRequest?: number;
 }
 
 const dagreGraph = new dagre.graphlib.Graph();
@@ -77,6 +90,7 @@ interface CustomNodeData {
   anomalyStatus?: 'normal' | 'alerta' | 'critico';
   anomalyMinNight?: number;
   anomalyClassLabel?: string;
+  symbolScale?: number;
 }
 
 const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
@@ -90,7 +104,7 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
   let icon = <Circle className="w-2 h-2" fill={colorOverride || '#111827'} stroke={colorOverride || '#111827'} />;
   let bgColor = 'bg-white';
   let borderColor = 'border-blue-500';
-  let sizeClass = 'w-4 h-4';
+  let sizeClass = 'w-6 h-6';
 
   if (type === 'reservoir') {
     icon = <ReservoirIcon className="w-5 h-5 text-indigo-600" />;
@@ -104,26 +118,31 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
     sizeClass = 'w-9 h-9';
   }
 
+  const scale = data.symbolScale || 1;
   const style: React.CSSProperties = {
-    ...(type === 'junction' ? { backgroundColor: colorOverride || '#111827', borderColor: colorOverride || '#111827' } : {}),
-    ...(colorOverride && type === 'junction' ? { backgroundColor: colorOverride, borderColor: colorOverride } : {}),
+    ...(type === 'junction' ? { backgroundColor: colorOverride || '#111827', borderColor: '#111827', borderWidth: '3px' } : {}),
+    ...(colorOverride && type === 'junction' ? { backgroundColor: colorOverride, borderColor: '#111827' } : {}),
     ...(highlightColor ? { borderColor: highlightColor, boxShadow: `0 0 0 4px ${highlightColor}33` } : {}),
+    transform: `scale(${scale})`,
+    transformOrigin: 'center',
   };
-  const opacity = dimmed ? 0.25 : 1;
+  const opacity = dimmed ? 0.45 : 1; // Increased dimmed opacity
 
   return (
     <div
-      className={`group relative flex items-center justify-center ${sizeClass} rounded-full border-2 ${type === 'junction' ? '' : `${bgColor} ${borderColor}`} shadow-sm`}
+      className={`group relative flex items-center justify-center ${sizeClass} rounded-full border-[3px] shadow-md transition-all ${type === 'junction' ? '' : `${bgColor} ${borderColor}`}`}
       style={{ ...style, opacity }}
       title={data.id}
     >
       <Handle type="target" position={Position.Top} className="opacity-0 w-1 h-1" />
       {showPressureLabel && (
-        <div className="absolute -top-8 left-1/2 z-10 -translate-x-1/2 rounded border border-zinc-200 bg-white/95 px-1.5 py-0.5 text-[10px] font-semibold text-black shadow-sm whitespace-nowrap pointer-events-none">
+        <div className="absolute -top-9 left-1/2 z-10 -translate-x-1/2 rounded-md border border-zinc-300 bg-white/95 px-2 py-1 text-[12px] font-bold text-black shadow-md whitespace-nowrap pointer-events-none">
           {pressure.toFixed(1)} mca
         </div>
       )}
-      {type === 'junction' ? null : icon}
+      {type === 'junction' ? (
+        <div className="w-2 h-2 rounded-full bg-white/60 shadow-inner" style={{ boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.2)' }} />
+      ) : icon}
       <Handle type="source" position={Position.Bottom} className="opacity-0 w-1 h-1" />
       <div className="absolute -bottom-10 text-[10px] font-mono text-zinc-700 bg-white/90 border border-zinc-200 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10 flex flex-col items-center">
         <span className="font-bold">{data.id}</span>
@@ -184,10 +203,10 @@ interface ValveMarkerNodeData {
 const CustomCustomerMeterNode = ({ data }: { data: CustomerMeterNodeData }) => {
   return (
     <div
-      className="group relative h-3 w-3 flex items-center justify-center rounded-sm border border-amber-800 bg-amber-400 shadow-sm"
+      className="group relative h-3 w-3 flex items-center justify-center rounded-sm border border-zinc-600 bg-zinc-400 shadow-sm"
       title={data.meter.id}
     >
-      <Home className="w-2 h-2 text-amber-900" fill="currentColor" fillOpacity={0.2} />
+      <Home className="w-2 h-2 text-zinc-800" fill="currentColor" fillOpacity={0.2} />
       <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-mono text-zinc-700 opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap pointer-events-none z-20">
         {data.meter.id}
       </div>
@@ -231,6 +250,19 @@ export default function NetworkViewer({
   customerMeters = [],
   showCustomerMeters = true,
   nodeAnomalyById,
+  mapTheme = 'light',
+  showNodes = true,
+  showLinks = true,
+  showReservoirs = true,
+  showTanks = true,
+  showPumps = true,
+  showValves = true,
+  showLabels = true,
+  showFlowArrows = true,
+  baseLineWidth = 3,
+  linkOpacity = 1,
+  symbolScale = 1,
+  fitRequest = 0,
 }: NetworkViewerProps) {
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
   const [editMode, setEditMode] = useState<'select' | 'drawPolygon'>('select');
@@ -274,6 +306,9 @@ export default function NetworkViewer({
     }
 
     Object.values(data.nodes).forEach((n) => {
+      if (!showNodes && n.type === 'junction') return;
+      if (!showReservoirs && n.type === 'reservoir') return;
+      if (!showTanks && n.type === 'tank') return;
       const x = n.coordinates ? (n.coordinates.x - minX) * scale : 0;
       const y = n.coordinates ? -(n.coordinates.y - minY) * scale : 0;
 
@@ -307,7 +342,9 @@ export default function NetworkViewer({
           anomalyStatus: nodeAnomalyById?.[n.id]?.status,
           anomalyMinNight: nodeAnomalyById?.[n.id]?.minNight,
           anomalyClassLabel: nodeAnomalyById?.[n.id]?.classification,
+          symbolScale,
         },
+        zIndex: n.type === 'junction' ? 50 : 10,
       });
       nodePositions[n.id] = { x, y };
     });
@@ -330,7 +367,7 @@ export default function NetworkViewer({
           draggable: false,
           selectable: true,
           data: { meter, dimmed },
-          style: { opacity: dimmed ? 0.25 : 1 },
+          style: { opacity: dimmed ? 0.2 : 0.8 },
         });
 
         nodes.push({
@@ -354,7 +391,7 @@ export default function NetworkViewer({
             stroke: '#d97706',
             strokeWidth: 2,
             strokeDasharray: '6 3',
-            opacity: dimmed ? 0.2 : 0.95,
+            opacity: dimmed ? 0.1 : 0.6,
           },
           data: { meter },
         });
@@ -362,15 +399,18 @@ export default function NetworkViewer({
     }
 
     Object.values(data.links).forEach((l) => {
+      if (!showLinks && l.type === 'pipe') return;
+      if (!showPumps && l.type === 'pump') return;
+      if (!showValves && l.type === 'valve') return;
       let color = '#94a3b8';
-      let strokeWidth = 2;
+      let strokeWidth = baseLineWidth;
       let animated = false;
       let label = '';
       let strokeDasharray = '';
 
       // Color is always based on diameter per user request
       color = diameterToColor(l.diameter);
-      strokeWidth = 3;
+      strokeWidth = baseLineWidth;
 
       if (l.type === 'pump') {
         animated = true;
@@ -381,20 +421,21 @@ export default function NetworkViewer({
       }
 
       let labelWithResults = label;
-      if (linkColorMode === 'flow' && l.flow !== undefined) {
-        labelWithResults = `${Math.abs(flowToM3h(l.flow) ?? 0).toFixed(1)} m³/h`;
-      } else if (linkColorMode === 'diameter' && l.diameter !== undefined) {
-        labelWithResults = `Ø ${l.diameter.toFixed(0)} mm`;
-      } else if (linkColorMode === 'velocity' && l.velocity !== undefined) {
-        labelWithResults = `${l.velocity.toFixed(2)} m/s`;
+      const paramLabel = 
+        linkColorMode === 'flow' && l.flow !== undefined ? `${Math.abs(flowToM3h(l.flow) ?? 0).toFixed(1)} m³/h` :
+        linkColorMode === 'diameter' && l.diameter !== undefined ? `Ø ${l.diameter.toFixed(0)} mm` :
+        linkColorMode === 'velocity' && l.velocity !== undefined ? `${l.velocity.toFixed(2)} m/s` : '';
+      
+      if (paramLabel) {
+        labelWithResults = label && label !== paramLabel ? `${label} (${paramLabel})` : paramLabel;
       }
 
       const dimmed = !!(highlightIds && !highlightIds.has(l.id) && !highlightIds.has(l.node1) && !highlightIds.has(l.node2));
-      const finalOpacity = dimmed ? 0.15 : 1;
+      const finalOpacity = dimmed ? 0.15 : linkOpacity;
       const finalColor = !dimmed && highlightColor ? highlightColor : color;
 
       const isReverseFlow = typeof l.flow === 'number' && l.flow < 0;
-      const hasFlow = typeof l.flow === 'number' && Math.abs(l.flow) > 1e-6;
+      const hasFlow = showFlowArrows && typeof l.flow === 'number' && Math.abs(l.flow) > 1e-6;
 
       edges.push({
         id: l.id,
@@ -402,11 +443,11 @@ export default function NetworkViewer({
         target: isReverseFlow ? l.node1 : l.node2,
         type: 'straight',
         animated: animated || hasFlow,
-        label: labelWithResults,
-        labelStyle: { fontSize: '10px', fill: '#4b5563', fontWeight: 500, opacity: finalOpacity },
-        labelBgPadding: [4, 2],
-        labelBgBorderRadius: 4,
-        labelBgStyle: { fill: '#ffffff', fillOpacity: 0.8 * finalOpacity },
+        label: showLabels ? labelWithResults : '',
+        labelStyle: { fontSize: '13px', fill: '#111827', fontWeight: 700, opacity: finalOpacity },
+        labelBgPadding: [8, 5],
+        labelBgBorderRadius: 6,
+        labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95 * finalOpacity },
         style: { stroke: finalColor, strokeWidth: !dimmed && highlightColor ? Math.max(strokeWidth, 3) : strokeWidth, strokeDasharray, opacity: finalOpacity },
         data: { originalData: l },
       });
@@ -434,7 +475,7 @@ export default function NetworkViewer({
     });
 
     return { initialNodes: nodes, initialEdges: edges, requiresLayout: missingCoords };
-  }, [data, nodeColorMode, linkColorMode, flowColor, highlightIds, highlightColor, customerMeters, showCustomerMeters, nodeAnomalyById]);
+  }, [data, nodeColorMode, linkColorMode, flowColor, highlightIds, highlightColor, customerMeters, showCustomerMeters, nodeAnomalyById, showNodes, showLinks, showReservoirs, showTanks, showPumps, showValves, showLabels, showFlowArrows, baseLineWidth, linkOpacity, symbolScale]);
 
   const { nodes: layoutedNodes, edges: layoutedEdges } = useMemo(() => {
     if (requiresLayout) {
@@ -532,8 +573,18 @@ export default function NetworkViewer({
     return arr;
   }, [layoutedNodes, polygonPoints]);
 
+  useEffect(() => {
+    if (rfInstance) {
+      window.requestAnimationFrame(() => {
+        rfInstance.fitView({ padding: 0.24, minZoom: 0.02, maxZoom: 1.4, duration: 550 });
+      });
+    }
+  }, [fitRequest, rfInstance]);
+
+  const isDarkMap = mapTheme === 'dark';
+
   return (
-    <div className="w-full h-full min-h-[600px] bg-white border border-zinc-300 rounded-lg overflow-hidden relative">
+    <div className={`w-full h-full min-h-[600px] overflow-hidden relative ${isDarkMap ? 'bg-zinc-950' : 'bg-slate-50'}`}>
       <ReactFlow
         nodes={nodesToRender}
         edges={layoutedEdges}
@@ -554,39 +605,13 @@ export default function NetworkViewer({
         zoomOnDoubleClick={editMode === 'select'}
         attributionPosition="bottom-right"
       >
-        <Background gap={20} color="#d4d4d8" />
-        <Controls className="bg-white border-zinc-300" showInteractive={false} />
+        <Background gap={20} color={isDarkMap ? '#27272a' : '#cbd5e1'} />
+        <Controls className={`${isDarkMap ? 'bg-zinc-900 border-zinc-700 text-zinc-100' : 'bg-white border-slate-300'}`} showInteractive={false} />
         
-        <Panel position="top-right" className="bg-white/90 backdrop-blur-sm p-1.5 rounded-lg border border-zinc-300 shadow-sm flex gap-1">
-          <button
-            onClick={() => { setEditMode('select'); setPolygonPoints([]); }}
-            title="Selecionar Elementos"
-            className={`p-2 rounded flex items-center justify-center transition-colors ${editMode === 'select' ? 'bg-blue-100 text-blue-700' : 'text-zinc-600 hover:bg-zinc-100'}`}
-          >
-            <MousePointer2 className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => { setEditMode('drawPolygon'); setPolygonPoints([]); }}
-            title="Criar Setor (Polígono)"
-            className={`p-2 rounded flex items-center justify-center transition-colors ${editMode === 'drawPolygon' ? 'bg-purple-100 text-purple-700' : 'text-zinc-600 hover:bg-zinc-100'}`}
-          >
-            <LassoSelect className="w-4 h-4" />
-          </button>
-          {editMode === 'drawPolygon' && (
-            <div className="flex items-center ml-2 space-x-2">
-              <span className="text-[11px] text-purple-700 font-medium">Clique para desenhar. Botão direito para fechar.</span>
-              <button 
-                onClick={handleFinishPolygon}
-                className="text-xs bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded"
-              >
-                Concluir
-              </button>
-            </div>
-          )}
-        </Panel>
+
       </ReactFlow>
 
-      <div className="absolute top-4 left-4 bg-black/90 p-3 rounded-lg border border-zinc-800 text-xs space-y-2 backdrop-blur-sm text-zinc-400">
+      <div className="hidden">
         {nodeColorMode === 'pressure' ? (
           <div>
             <div className="font-semibold text-zinc-700 dark:text-zinc-200 mb-1">Pressão (mca) — nós</div>
@@ -603,7 +628,7 @@ export default function NetworkViewer({
             <div className="flex items-center gap-2"><Circle className="w-3 h-3 text-zinc-900 fill-zinc-900" /> Junction</div>
             <div className="flex items-center gap-2"><ReservoirIcon className="w-3 h-3 text-indigo-600" /> Reservatório</div>
             <div className="flex items-center gap-2"><TankIcon className="w-3 h-3 text-cyan-600" /> Tanque</div>
-            <div className="flex items-center gap-2"><Home className="w-3 h-3 text-amber-500 fill-amber-500/20" /> Consumidor (Casa)</div>
+            <div className="flex items-center gap-2"><Home className="w-3 h-3 text-zinc-500 fill-zinc-400/30" /> Consumidor (Casa)</div>
           </div>
         )}
 
