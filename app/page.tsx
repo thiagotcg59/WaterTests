@@ -38,6 +38,8 @@ import { SimulationOptions } from '../lib/simulation/simulationOptionsSchema';
 import { defaultOptions } from '../lib/simulation/simulationOptionsDefaults';
 import { parseInpOptions } from '../lib/simulation/inpOptionsParser';
 import { applyOptionsToInp } from '../lib/simulation/inpOptionsWriter';
+import { interpretEpanetError, type SimulationErrorInfo } from '../lib/simulation/interpretEpanetError';
+import SimulationErrorsTab from '../components/SimulationErrorsTab';
 import { DIAMETER_RANGES, NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
 import { addLink, addNode, deleteLink, deleteNode, networkToInp, updateLinkAttrs, updateNodeAttrs, updateNodeCoordinates } from '../lib/geoJsonToInp';
 import TimeSlider from '../components/TimeSlider';
@@ -371,7 +373,8 @@ export default function Home() {
   const [simStats, setSimStats] = useState<SimulationStats>({ hasResults: false });
   const [isSimulating, setIsSimulating] = useState(false);
   const [tab, setTab] = useState<TabKey>('mapa');
-  const [modelagemSubtab, setModelagemSubtab] = useState<'controles' | 'calibracao' | 'parametros' | 'consumidores' | 'mapa-gis'>('controles');
+  const [modelagemSubtab, setModelagemSubtab] = useState<'controles' | 'calibracao' | 'parametros' | 'consumidores' | 'mapa-gis' | 'erros'>('controles');
+  const [simulationError, setSimulationError] = useState<SimulationErrorInfo | null>(null);
   const [valveInsertType, setValveInsertType] = useState<'PRV' | 'PSV' | 'PBV' | 'FCV' | 'TCV' | 'GPV'>('PRV');
   const [valveInsertSetting, setValveInsertSetting] = useState<number>(10);
   const [valveInsertDiameter, setValveInsertDiameter] = useState<number>(100);
@@ -531,6 +534,7 @@ export default function Home() {
     setError(null);
     setErrorLog(null);
     setShowErrorLog(false);
+    setSimulationError(null);
     setSelectedTimeIndex(0);
     try {
       const validationIssues = validateNetworkForSimulation(networkData);
@@ -538,6 +542,13 @@ export default function Home() {
         const log = validationIssues.map((issue, index) => `${index + 1}. ${issue}`).join('\n');
         setError(`Modelo invalido para simulacao (${validationIssues.length} problema(s)).`);
         setErrorLog(`Falha de validacao antes da simulacao:\n${log}`);
+        setSimulationError({
+          fileName,
+          stage: 'leitura do INP',
+          originalMessage: log,
+          technicalExplanation: 'A pré-validação detectou inconsistências no modelo antes mesmo de chamar o motor EPANET. Os itens listados abaixo precisam ser corrigidos.',
+          suggestions: validationIssues.slice(0, 12),
+        });
         setSimStats({ hasResults: false });
         return;
       }
@@ -592,6 +603,7 @@ export default function Home() {
         setError(serverMsg);
         const detailed = [result.errorHint, result.errorTechnical, result.errorReportTail].filter(Boolean).join('\n\n');
         setErrorLog(detailed || serverMsg);
+        setSimulationError(interpretEpanetError(detailed || serverMsg, { fileName }));
         setSimStats({ hasResults: false });
         return;
       }
@@ -600,6 +612,8 @@ export default function Home() {
         setError(result.error || 'Falha na simulação.');
         const detailed = result.errorLog || [result.errorHint, result.errorTechnical, result.errorReportTail].filter(Boolean).join('\n\n');
         setErrorLog(detailed || result.error || 'Falha na simulacao.');
+        const technicalSource = result.errorTechnical || result.error || detailed || 'Falha na simulação.';
+        setSimulationError(interpretEpanetError(technicalSource, { fileName }));
         setSimStats({ hasResults: false });
         return;
       }
@@ -658,8 +672,10 @@ export default function Home() {
       setLinkColorMode(prev => prev === 'type' ? 'velocity' : prev);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
       setError('Erro ao executar a simulação: ' + msg);
       setErrorLog(msg);
+      setSimulationError(interpretEpanetError(msg, { fileName, stack }));
     } finally {
       setIsSimulating(false);
     }
@@ -2425,17 +2441,27 @@ export default function Home() {
                           ['consumidores', 'Consumidores'],
                           ['calibracao', 'Calibração'],
                           ['parametros', 'Parâmetros'],
-                        ].map(([key, label]) => (
-                          <button
-                            key={key}
-                            onClick={() => setModelagemSubtab(key as typeof modelagemSubtab)}
-                            className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                              modelagemSubtab === key ? 'bg-cyan-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-100'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        ))}
+                          ['erros', 'Erros da Simulação'],
+                        ].map(([key, label]) => {
+                          const isActive = modelagemSubtab === key;
+                          const isErrosWithIssue = key === 'erros' && simulationError !== null;
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => setModelagemSubtab(key as typeof modelagemSubtab)}
+                              className={`relative rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                                isActive
+                                  ? (key === 'erros' ? 'bg-red-500 text-zinc-950' : 'bg-cyan-500 text-zinc-950')
+                                  : 'text-zinc-400 hover:text-zinc-100'
+                              }`}
+                            >
+                              {label}
+                              {isErrosWithIssue && !isActive && (
+                                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-red-500 border border-black" aria-hidden />
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                     <div className="flex-1 min-h-0 p-3 overflow-auto">
@@ -2549,15 +2575,23 @@ export default function Home() {
                         </div>
                       )}
 
+                      {modelagemSubtab === 'erros' && (
+                        <SimulationErrorsTab
+                          error={simulationError}
+                          onClear={() => setSimulationError(null)}
+                        />
+                      )}
+
                       {modelagemSubtab !== 'controles' &&
                         modelagemSubtab !== 'consumidores' &&
                         modelagemSubtab !== 'mapa-gis' &&
                         modelagemSubtab !== 'parametros' &&
-                        modelagemSubtab !== 'calibracao' && (
+                        modelagemSubtab !== 'calibracao' &&
+                        modelagemSubtab !== 'erros' && (
                         <div className="h-full flex flex-col items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-500">
                           <Cpu className="w-10 h-10 mb-3 opacity-30" />
                           <div className="text-base font-semibold text-zinc-300">Subaba em preparação</div>
-                          <p className="text-sm">Use Controles, Mapa GIS, Consumidores, Calibração ou Parâmetros.</p>
+                          <p className="text-sm">Use Controles, Mapa GIS, Consumidores, Calibração, Parâmetros ou Erros da Simulação.</p>
                         </div>
                       )}
                     </div>
