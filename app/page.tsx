@@ -39,6 +39,7 @@ import { defaultOptions } from '../lib/simulation/simulationOptionsDefaults';
 import { parseInpOptions } from '../lib/simulation/inpOptionsParser';
 import { applyOptionsToInp } from '../lib/simulation/inpOptionsWriter';
 import { interpretEpanetError, type SimulationErrorInfo } from '../lib/simulation/interpretEpanetError';
+import { runSimulationClient } from '../lib/simulation/runSimulationClient';
 import SimulationErrorsTab from '../components/SimulationErrorsTab';
 import { DIAMETER_RANGES, NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
 import { addLink, addNode, deleteLink, deleteNode, networkToInp, updateLinkAttrs, updateNodeAttrs, updateNodeCoordinates } from '../lib/geoJsonToInp';
@@ -567,46 +568,11 @@ export default function Home() {
           hydraulicControls
         )
       );
-      const response = await fetch('/api/simular', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          inp: inpToRun,
-          durationHours: simDurationHours,
-          consumptionPattern: consumptionPattern
-        }),
+      const result = await runSimulationClient({
+        inp: inpToRun,
+        durationHours: simDurationHours,
+        consumptionPattern: consumptionPattern,
       });
-      const raw = await response.text();
-      let result: {
-        success?: boolean;
-        error?: string;
-        errorHint?: string;
-        errorTechnical?: string;
-        errorReportTail?: string;
-        errorLog?: string;
-        nodes?: unknown[];
-        links?: unknown[];
-        ranAt?: string;
-        timeSeries?: any;
-        duration?: number;
-      };
-
-      try {
-        result = raw ? JSON.parse(raw) : {};
-      } catch {
-        const fallback = raw?.trim() ? raw.trim() : `HTTP ${response.status}`;
-        throw new Error(`Resposta inválida do servidor: ${fallback}`);
-      }
-
-      if (!response.ok) {
-        const serverMsg = result.error || `Falha HTTP ${response.status}`;
-        setError(serverMsg);
-        const detailed = [result.errorHint, result.errorTechnical, result.errorReportTail].filter(Boolean).join('\n\n');
-        setErrorLog(detailed || serverMsg);
-        setSimulationError(interpretEpanetError(detailed || serverMsg, { fileName }));
-        setSimStats({ hasResults: false });
-        return;
-      }
 
       if (!result.success) {
         setError(result.error || 'Falha na simulação.');
