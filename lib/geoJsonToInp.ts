@@ -15,7 +15,7 @@ import { buildCustomerMetersSection, buildCustomerMeterPressuresSection } from '
 type SectionKey =
   | 'JUNCTIONS' | 'RESERVOIRS' | 'TANKS'
   | 'PIPES' | 'PUMPS' | 'VALVES'
-  | 'COORDINATES'
+  | 'COORDINATES' | 'VERTICES'
   | 'CONTROLS'
   | 'CUSTOMER_METERS'
   | 'CUSTOMER_METER_PRESSURES';
@@ -132,6 +132,16 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
         out.push([quote(n.id), n.coordinates.x, n.coordinates.y].join('\t'));
       }
       return out;
+    case 'VERTICES':
+      out.push(';Link\tX-Coord\tY-Coord');
+      for (const l of Object.values(data.links)) {
+        if (!Array.isArray(l.vertices) || l.vertices.length === 0) continue;
+        for (const v of l.vertices) {
+          if (!Number.isFinite(v.x) || !Number.isFinite(v.y)) continue;
+          out.push([quote(l.id), v.x, v.y].join('\t'));
+        }
+      }
+      return out;
     case 'CONTROLS':
       out.push(';Controles operacionais regenerados a partir da aba Modelagem Hidráulica');
       for (const ctrl of data.hydraulicControls ?? []) {
@@ -190,7 +200,7 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
 
 const ALL_SECTIONS: SectionKey[] = [
   'JUNCTIONS', 'RESERVOIRS', 'TANKS',
-  'PIPES', 'PUMPS', 'VALVES', 'COORDINATES',
+  'PIPES', 'PUMPS', 'VALVES', 'COORDINATES', 'VERTICES',
   'CONTROLS',
   'CUSTOMER_METERS',
   'CUSTOMER_METER_PRESSURES',

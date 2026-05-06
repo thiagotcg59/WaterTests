@@ -39,6 +39,9 @@ export interface LinkElement {
   elevation?: number;
   parameters?: string;
   tipoPipe?: 'Adutora' | 'Rede';
+  // Pontos de curvatura puramente geométricos (seção [VERTICES] do EPANET).
+  // Não criam nós hidráulicos; só alteram o traçado visual do tubo.
+  vertices?: Coordinates[];
   // resultados da simulação
   flow?: number;
   velocity?: number;

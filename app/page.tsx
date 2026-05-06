@@ -23,6 +23,7 @@ import CarbonPotentialTab from '../components/CarbonPotentialTab';
 import SectorsTab from '../components/SectorsTab';
 import CriticalityTab from '../components/CriticalityTab';
 import InventoryTab from '../components/InventoryTab';
+import AssetViewer3D from '../components/AssetViewer3D';
 import InterpretacaoOperacionalTab from '../components/InterpretacaoOperacionalTab';
 import PressureIntelligentAnalysisTab from '../components/PressureIntelligentAnalysisTab';
 import HydraulicControlsTab from '../components/HydraulicControlsTab';
@@ -39,14 +40,18 @@ import { defaultOptions } from '../lib/simulation/simulationOptionsDefaults';
 import { parseInpOptions } from '../lib/simulation/inpOptionsParser';
 import { applyOptionsToInp } from '../lib/simulation/inpOptionsWriter';
 import { interpretEpanetError, type SimulationErrorInfo } from '../lib/simulation/interpretEpanetError';
+import QuickHydraulicModelPanel from '../components/QuickHydraulicModelPanel';
+import { type HydraulicDraft, isNodeDraft, isLinkDraft, buildNodeFromDraft, buildLinkFromDraft } from '../lib/hydraulicDraft';
 import { runSimulationClient } from '../lib/simulation/runSimulationClient';
 import SimulationErrorsTab from '../components/SimulationErrorsTab';
+import WeatherIndicator from '../components/WeatherIndicator';
+import { ANCHOR_PRESETS, DEFAULT_ANCHOR, type GeoAnchor } from '../lib/geoTransform';
 import { DIAMETER_RANGES, NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
 import { addLink, addNode, deleteLink, deleteNode, networkToInp, updateLinkAttrs, updateNodeAttrs, updateNodeCoordinates } from '../lib/geoJsonToInp';
 import TimeSlider from '../components/TimeSlider';
 import { networkToGeoJson } from '../lib/inpToGeoJson';
 import { generateAISectorization } from '../lib/aiSectorization';
-import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2 } from 'lucide-react';
+import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2, Droplets } from 'lucide-react';
 import PatternEditor, { DEFAULT_PATTERN } from '../components/PatternEditor';
 import * as turf from '@turf/turf';
 
@@ -376,6 +381,14 @@ export default function Home() {
   const [tab, setTab] = useState<TabKey>('mapa');
   const [modelagemSubtab, setModelagemSubtab] = useState<'controles' | 'calibracao' | 'parametros' | 'consumidores' | 'mapa-gis' | 'erros'>('controles');
   const [simulationError, setSimulationError] = useState<SimulationErrorInfo | null>(null);
+  const [geoAnchor, setGeoAnchorState] = useState<GeoAnchor>(DEFAULT_ANCHOR);
+  const [showGeoAnchorMenu, setShowGeoAnchorMenu] = useState(false);
+  const [showQuickModelPanel, setShowQuickModelPanel] = useState(false);
+  const [quickModelInitialKind, setQuickModelInitialKind] = useState<HydraulicDraft['kind'] | undefined>(undefined);
+  const [pendingHydraulicDraft, setPendingHydraulicDraft] = useState<HydraulicDraft | null>(null);
+  // Último draft confirmado e inserido no mapa. Permite ao usuário
+  // repetir a criação com as mesmas propriedades pressionando ESPAÇO.
+  const [lastHydraulicDraft, setLastHydraulicDraft] = useState<HydraulicDraft | null>(null);
   const [valveInsertType, setValveInsertType] = useState<'PRV' | 'PSV' | 'PBV' | 'FCV' | 'TCV' | 'GPV'>('PRV');
   const [valveInsertSetting, setValveInsertSetting] = useState<number>(10);
   const [valveInsertDiameter, setValveInsertDiameter] = useState<number>(100);
@@ -396,6 +409,28 @@ export default function Home() {
   const [mapPanelTab, setMapPanelTab] = useState<'camadas' | 'legendas' | 'simbologia' | 'selecao'>('camadas');
   const [mapTheme, setMapTheme] = useState<'dark' | 'light'>('dark');
   const [mapFitRequest, setMapFitRequest] = useState(0);
+
+  // Carrega o anchor geográfico salvo (uma vez no boot do client)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem('epanet-dashboard:geoAnchor');
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as GeoAnchor;
+      if (typeof parsed?.lat === 'number' && typeof parsed?.lng === 'number') {
+        setGeoAnchorState(parsed);
+      }
+    } catch { /* ignora */ }
+  }, []);
+
+  const setGeoAnchor = useCallback((next: GeoAnchor) => {
+    setGeoAnchorState(next);
+    if (typeof window !== 'undefined') {
+      try { window.localStorage.setItem('epanet-dashboard:geoAnchor', JSON.stringify(next)); } catch { /* ignora */ }
+    }
+    setMapFitRequest((v) => v + 1);
+  }, []);
+
   const [mapLabelsVisible, setMapLabelsVisible] = useState(true);
   const [mapFlowArrowsVisible, setMapFlowArrowsVisible] = useState(true);
   const [mapLineWidth, setMapLineWidth] = useState(3);
@@ -440,6 +475,7 @@ export default function Home() {
   const [aiSectorizationAnalysis, setAISectorizationAnalysis] = useState('');
   const [aiSectorizationScenarios, setAISectorizationScenarios] = useState<AISectorizationScenario[]>([]);
   const [activeAISectorizationScenarioId, setActiveAISectorizationScenarioId] = useState<string | null>(null);
+  const [viewer3DAsset, setViewer3DAsset] = useState<NodeElement | LinkElement | null>(null);
 
   /** Apply a specific timestep from the timeSeries to the networkData values shown on map */
   const applyTimestep = useCallback((index: number) => {
@@ -691,22 +727,51 @@ export default function Home() {
   };
 
   const syncLinkLengths = (data: NetworkData): NetworkData => {
+    // Calcula o comprimento real de cada tubo a partir da posição geográfica
+    // dos nós (em metros, via haversine), respeitando a escala do mapa GIS
+    // independentemente do sistema de coordenadas do INP (lat/lng, UTM ou
+    // metros locais). Inclui os vértices intermediários da polilinha.
+    const transform = networkToGeoJson(data, geoAnchor).transform;
+    const EARTH_RADIUS = 6378137;
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const segmentMeters = (a: [number, number], b: [number, number]): number => {
+      const dLat = toRad(b[1] - a[1]);
+      const dLng = toRad(b[0] - a[0]);
+      const lat1 = toRad(a[1]);
+      const lat2 = toRad(b[1]);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return 2 * EARTH_RADIUS * Math.asin(Math.min(1, Math.sqrt(h)));
+    };
+
     const newLinks = { ...data.links };
     let changed = false;
     for (const id in newLinks) {
       const l = newLinks[id];
-      if (l.type === 'pipe') {
-        const n1 = data.nodes[l.node1];
-        const n2 = data.nodes[l.node2];
-        if (n1?.coordinates && n2?.coordinates) {
-          const dx = n2.coordinates.x - n1.coordinates.x;
-          const dy = n2.coordinates.y - n1.coordinates.y;
-          const dist = Math.round(Math.sqrt(dx * dx + dy * dy) * 100) / 100;
-          if (l.length !== dist) {
-            newLinks[id] = { ...l, length: dist };
-            changed = true;
+      if (l.type !== 'pipe') continue;
+      const n1 = data.nodes[l.node1];
+      const n2 = data.nodes[l.node2];
+      if (!n1?.coordinates || !n2?.coordinates) continue;
+
+      const polyline: [number, number][] = [
+        transform.toLngLat(n1.coordinates.x, n1.coordinates.y),
+      ];
+      if (Array.isArray(l.vertices)) {
+        for (const v of l.vertices) {
+          if (Number.isFinite(v?.x) && Number.isFinite(v?.y)) {
+            polyline.push(transform.toLngLat(v.x, v.y));
           }
         }
+      }
+      polyline.push(transform.toLngLat(n2.coordinates.x, n2.coordinates.y));
+
+      let total = 0;
+      for (let i = 0; i < polyline.length - 1; i++) {
+        total += segmentMeters(polyline[i], polyline[i + 1]);
+      }
+      const dist = Math.round(total * 100) / 100;
+      if (l.length !== dist) {
+        newLinks[id] = { ...l, length: dist };
+        changed = true;
       }
     }
     return changed ? { ...data, links: newLinks } : data;
@@ -779,6 +844,28 @@ export default function Home() {
       const tag = target?.tagName;
       const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable;
       if (isEditable) return;
+
+      // ESC desseleciona qualquer elemento ou customer meter ativo.
+      if (e.key === 'Escape') {
+        setSelectedElement(null);
+        setSelectedCustomerMeter(null);
+        return;
+      }
+
+      // M ativa o modo "Mover Nó" (atalho do mapa GIS).
+      if ((e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setGisEditMode('move');
+        return;
+      }
+
+      // J abre o painel rápido já no formulário de Junction.
+      if ((e.key === 'j' || e.key === 'J') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setQuickModelInitialKind('junction');
+        setShowQuickModelPanel(true);
+        return;
+      }
 
       const isMod = e.ctrlKey || e.metaKey;
       if (!isMod) return;
@@ -1032,14 +1119,28 @@ export default function Home() {
 
   const handleNodeMoved = (id: string, lng: number, lat: number) => {
     if (!networkData) return;
-    const [x, y] = networkToGeoJson(networkData).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
     updateNetwork(data => updateNodeCoordinates(data, id, x, y));
   };
 
   const handleNodeAdded = (lng: number, lat: number) => {
     if (!networkData) return;
-    const [x, y] = networkToGeoJson(networkData).transform.toEpanet(lng, lat);
-    const kind = showModelagemPanel ? activeNodeKind : 'junction';
+    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+
+    // Caminho rápido: se há um draft pendente do painel de Modelagem
+    // Hidráulica e ele é de nó, criamos o elemento com TODAS as
+    // propriedades já preenchidas pelo usuário e encerramos o modo de
+    // criação automaticamente.
+    if (pendingHydraulicDraft && isNodeDraft(pendingHydraulicDraft)) {
+      const node = buildNodeFromDraft(pendingHydraulicDraft, { x, y });
+      updateNetwork((d) => addNode(d, node));
+      setLastHydraulicDraft(pendingHydraulicDraft);
+      setPendingHydraulicDraft(null);
+      setGisEditMode('select');
+      return;
+    }
+
+    const kind = activeNodeKind;
     const prefix = kind === 'reservoir' ? 'R' : kind === 'tank' ? 'T' : 'J';
     const id = nextId(prefix, networkData.nodes);
     const base = { id, type: kind as import('../types/epanet').ElementType, coordinates: { x, y } };
@@ -1047,6 +1148,134 @@ export default function Home() {
       : kind === 'tank' ? { ...base, elevation: 0, initLevel: 1, minLevel: 0, maxLevel: 5, diameter: 10 }
       : { ...base, elevation: 0, demand: 0 };
     updateNetwork(data => addNode(data, node as import('../types/epanet').NodeElement));
+  };
+
+  // Transforma uma junction (ou tanque/reservatório) existente em outro tipo,
+  // preservando id, coordenadas, conexões com tubos e dados compatíveis.
+  // Disparado pelo HydraulicMap quando o usuário clica em um nó com a
+  // ferramenta "Reservatório" ou "Tanque" ativa.
+  const handleTransformNodeKind = (id: string, kind: 'reservoir' | 'tank') => {
+    if (!networkData) return;
+    const existing = networkData.nodes[id];
+    if (!existing) return;
+    if (existing.type === kind) return;
+
+    updateNetwork((data) => {
+      const node = data.nodes[id];
+      if (!node) return data;
+
+      const baseElevation = typeof node.elevation === 'number' ? node.elevation : 0;
+      const commonKeep = { id: node.id, coordinates: node.coordinates };
+
+      let nextNode: NodeElement;
+      if (kind === 'reservoir') {
+        nextNode = {
+          ...commonKeep,
+          id: node.id,
+          type: 'reservoir',
+          head: typeof node.head === 'number' ? node.head : baseElevation,
+        } as NodeElement;
+      } else {
+        nextNode = {
+          ...commonKeep,
+          id: node.id,
+          type: 'tank',
+          elevation: baseElevation,
+          initLevel: typeof node.initLevel === 'number' ? node.initLevel : 1,
+          minLevel: typeof node.minLevel === 'number' ? node.minLevel : 0,
+          maxLevel: typeof node.maxLevel === 'number' ? node.maxLevel : 5,
+          diameter: typeof node.diameter === 'number' ? node.diameter : 10,
+        } as NodeElement;
+      }
+
+      return {
+        ...data,
+        nodes: { ...data.nodes, [id]: nextNode },
+      };
+    });
+
+    setSelectedElement((prev) => (prev && prev.id === id ? ({ ...(prev as NodeElement), type: kind } as NodeElement) : prev));
+  };
+
+  // Insere um vértice geométrico (ponto de curvatura) em um tubo existente,
+  // na posição correta da polilinha (entre nós/vértices). Não cria junction
+  // nem altera node1/node2 — só modifica a geometria visual e a seção
+  // [VERTICES] do INP exportado.
+  const handlePipeVertexAdded = (linkId: string, lng: number, lat: number) => {
+    if (!networkData) return;
+    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    updateNetwork((data) => {
+      const link = data.links[linkId];
+      if (!link || link.type !== 'pipe') return data;
+      const n1 = data.nodes[link.node1];
+      const n2 = data.nodes[link.node2];
+      if (!n1?.coordinates || !n2?.coordinates) return data;
+
+      const polyline: Array<{ x: number; y: number }> = [
+        n1.coordinates,
+        ...((link.vertices ?? []) as Array<{ x: number; y: number }>),
+        n2.coordinates,
+      ];
+
+      let bestSegment = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < polyline.length - 1; i++) {
+        const a = polyline[i];
+        const b = polyline[i + 1];
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const ab2 = abx * abx + aby * aby;
+        if (ab2 <= 1e-9) continue;
+        const apx = x - a.x;
+        const apy = y - a.y;
+        const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / ab2));
+        const px = a.x + abx * t;
+        const py = a.y + aby * t;
+        const d = Math.hypot(x - px, y - py);
+        if (d < bestDist) {
+          bestDist = d;
+          bestSegment = i;
+        }
+      }
+
+      const next = (link.vertices ?? []).slice();
+      next.splice(bestSegment, 0, { x, y });
+      return {
+        ...data,
+        links: { ...data.links, [linkId]: { ...link, vertices: next } },
+      };
+    });
+  };
+
+  const handlePipeVertexMoved = (linkId: string, vertexIndex: number, lng: number, lat: number) => {
+    if (!networkData) return;
+    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    updateNetwork((data) => {
+      const link = data.links[linkId];
+      if (!link || !Array.isArray(link.vertices)) return data;
+      if (vertexIndex < 0 || vertexIndex >= link.vertices.length) return data;
+      const next = link.vertices.slice();
+      next[vertexIndex] = { x, y };
+      return {
+        ...data,
+        links: { ...data.links, [linkId]: { ...link, vertices: next } },
+      };
+    });
+  };
+
+  const handlePipeVertexDeleted = (linkId: string, vertexIndex: number) => {
+    if (!networkData) return;
+    updateNetwork((data) => {
+      const link = data.links[linkId];
+      if (!link || !Array.isArray(link.vertices)) return data;
+      if (vertexIndex < 0 || vertexIndex >= link.vertices.length) return data;
+      const next = link.vertices.slice();
+      next.splice(vertexIndex, 1);
+      return {
+        ...data,
+        links: { ...data.links, [linkId]: { ...link, vertices: next } },
+      };
+    });
   };
 
   // ─── Opções de Simulação ────────────────────────────────────────────────
@@ -1071,7 +1300,7 @@ export default function Home() {
   // Usado pelo modo addPipe para criar automaticamente o nó de destino.
   const handleNodeAddedGetId = (lng: number, lat: number): string => {
     if (!networkData) return '';
-    const [x, y] = networkToGeoJson(networkData).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
     const id = nextId('J', networkData.nodes);
     updateNetwork(data => addNode(data, { id, type: 'junction', elevation: 0, demand: 0, coordinates: { x, y } }));
     return id;
@@ -1079,6 +1308,27 @@ export default function Home() {
 
   const handlePipeAdded = (sourceId: string, targetId: string) => {
     if (!networkData) return;
+
+    // Caminho rápido: draft pendente é link (pipe/pump/valve) — criamos
+    // com props do formulário do painel. O comprimento é calculado a
+    // partir das coordenadas dos nós quando não foi informado manualmente.
+    if (pendingHydraulicDraft && isLinkDraft(pendingHydraulicDraft)) {
+      const n1 = networkData.nodes[sourceId];
+      const n2 = networkData.nodes[targetId];
+      let geoLength: number | undefined;
+      if (n1?.coordinates && n2?.coordinates) {
+        const dx = n2.coordinates.x - n1.coordinates.x;
+        const dy = n2.coordinates.y - n1.coordinates.y;
+        geoLength = Math.sqrt(dx * dx + dy * dy);
+      }
+      const link = buildLinkFromDraft(pendingHydraulicDraft, sourceId, targetId, geoLength);
+      updateNetwork((d) => addLink(d, link));
+      setLastHydraulicDraft(pendingHydraulicDraft);
+      setPendingHydraulicDraft(null);
+      setGisEditMode('select');
+      return;
+    }
+
     const id = nextId('P', networkData.links);
     updateNetwork(data => addLink(data, {
       id,
@@ -1093,6 +1343,54 @@ export default function Home() {
     }));
   };
 
+  // Recebe o draft preenchido pelo QuickHydraulicModelPanel: armazena
+  // como pendente e ativa o modo de criação correto no mapa GIS, para
+  // que o próximo clique do usuário insira o elemento já configurado.
+  const commitHydraulicDraft = (draft: HydraulicDraft) => {
+    setPendingHydraulicDraft(draft);
+    if (isNodeDraft(draft)) {
+      setActiveNodeKind(draft.kind);
+      setGisEditMode('addNode');
+    } else {
+      setGisEditMode('addPipe');
+    }
+  };
+
+  // Reaplica o último draft inserido com um novo ID auto-gerado, mantendo
+  // todas as outras propriedades. Acionado pela tecla ESPAÇO na aba GIS.
+  const repeatLastHydraulicDraft = useCallback(() => {
+    if (!networkData) return;
+    if (pendingHydraulicDraft) return; // já existe um pendente, não acumula
+    const last = lastHydraulicDraft;
+    if (!last) return;
+
+    const isLink = isLinkDraft(last);
+    const pool = isLink ? networkData.links : networkData.nodes;
+    const prefix = ({ junction: 'J', reservoir: 'R', tank: 'T', pipe: 'P', pump: 'PU', valve: 'V' } as const)[last.kind];
+    const newId = nextId(prefix, pool);
+    commitHydraulicDraft({ ...last, id: newId } as HydraulicDraft);
+  }, [networkData, pendingHydraulicDraft, lastHydraulicDraft]);
+
+  // Listener global de ESPAÇO: na aba GIS, sem foco em input/textarea
+  // e sem draft já pendente, re-arma o último elemento criado.
+  useEffect(() => {
+    if (tab !== 'gis') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+      }
+      if (!lastHydraulicDraft) return;
+      if (pendingHydraulicDraft) return;
+      e.preventDefault();
+      repeatLastHydraulicDraft();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tab, lastHydraulicDraft, pendingHydraulicDraft, repeatLastHydraulicDraft]);
+
   const handlePipeConnectedToLink = (sourceId: string, linkId: string, lng: number, lat: number) => {
     if (!networkData) return;
     updateNetwork((data) => {
@@ -1104,7 +1402,7 @@ export default function Home() {
       const node2 = data.nodes[link.node2];
       if (!node1?.coordinates || !node2?.coordinates) return data;
 
-      const [x, y] = networkToGeoJson(data).transform.toEpanet(lng, lat);
+      const [x, y] = networkToGeoJson(data, geoAnchor).transform.toEpanet(lng, lat);
       const ax = node1.coordinates.x;
       const ay = node1.coordinates.y;
       const bx = node2.coordinates.x;
@@ -1220,7 +1518,7 @@ export default function Home() {
       const node2 = data.nodes[link.node2];
       if (!node1?.coordinates || !node2?.coordinates) return data;
 
-      const [x, y] = networkToGeoJson(data).transform.toEpanet(lng, lat);
+      const [x, y] = networkToGeoJson(data, geoAnchor).transform.toEpanet(lng, lat);
       const ax = node1.coordinates.x;
       const ay = node1.coordinates.y;
       const bx = node2.coordinates.x;
@@ -1442,7 +1740,7 @@ export default function Home() {
 
   const handleSectorGeometryUpdated = (id: string, geometry: any) => {
     if (!networkData) return;
-    const { transform } = networkToGeoJson(networkData);
+    const { transform } = networkToGeoJson(networkData, geoAnchor);
     
     try {
       const nodeIds: string[] = [];
@@ -1689,7 +1987,7 @@ export default function Home() {
     }
     try {
       const shpwrite = await import('shp-write');
-      const { transform } = networkToGeoJson(networkData);
+      const { transform } = networkToGeoJson(networkData, geoAnchor);
       const features = customerMeters.map(m => {
         const [lng, lat] = transform.toLngLat(m.x, m.y);
         return {
@@ -1777,7 +2075,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-black text-zinc-100 p-4 md:p-6 font-sans">
       <main className="max-w-[1600px] mx-auto flex flex-col h-[calc(100vh-3rem)]">
-        <header className="flex items-center justify-between mb-6 flex-shrink-0 flex-wrap gap-4 border border-zinc-800/50 bg-zinc-900/40 backdrop-blur-md px-6 py-4 rounded-2xl shadow-2xl">
+        <header className="flex items-center justify-between mb-4 flex-shrink-0 flex-wrap gap-3 border border-zinc-800/50 bg-zinc-900/40 backdrop-blur-md px-6 py-3 rounded-2xl shadow-2xl">
           <div className="flex items-center gap-4">
             <div className="relative group">
               <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-500 rounded-xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
@@ -1789,40 +2087,131 @@ export default function Home() {
               </div>
             </div>
             
-            <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold tracking-tight text-white">
-                  Gêmeo Digital <span className="text-blue-500">Hidráulico</span>
-                </h1>
-                <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-md">
-                  V2.0
-                </span>
-              </div>
-              <div className="flex items-center gap-3 mt-1">
-                <div className="flex items-center gap-2 text-[11px] font-medium">
-                  <span className="text-zinc-500 uppercase tracking-wider">Status:</span>
-                  <div className="flex items-center gap-1.5 px-2 py-0.5 bg-zinc-950/50 rounded-md border border-zinc-800/50">
-                    <div className={`w-1.5 h-1.5 rounded-full ${fileName ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`} />
-                    <span className="text-zinc-300 font-mono">
-                      {fileName ? fileName : 'Aguardando Arquivo'}
-                    </span>
-                  </div>
-                </div>
-                {simStats.hasResults && simStats.ranAt && (
-                  <div className="flex items-center gap-2 text-[11px] font-medium">
-                    <span className="text-zinc-500 uppercase tracking-wider">Sincronizado:</span>
-                    <span className="text-emerald-500 font-mono">
-                      {new Date(simStats.ranAt).toLocaleTimeString('pt-BR')}
-                    </span>
-                  </div>
-                )}
-              </div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold tracking-tight text-white">
+                Gêmeo Digital <span className="text-blue-500">Hidráulico</span>
+              </h1>
+              <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-md">
+                V2.0
+              </span>
             </div>
           </div>
 
-          {networkData && (
+          <div className="flex items-center gap-3 flex-wrap justify-end ml-auto">
             <div className="flex items-center gap-3">
-              {fileName && (
+              <div className="flex items-center gap-2 text-[11px] font-medium">
+                <span className="text-zinc-500 uppercase tracking-wider">Status:</span>
+                <div className="flex items-center gap-1.5 px-2 py-0.5 bg-zinc-950/50 rounded-md border border-zinc-800/50">
+                  <div className={`w-1.5 h-1.5 rounded-full ${fileName ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`} />
+                  <span className="text-zinc-300 font-mono">
+                    {fileName ? fileName : 'Aguardando Arquivo'}
+                  </span>
+                </div>
+              </div>
+              {simStats.hasResults && simStats.ranAt && (
+                <div className="flex items-center gap-2 text-[11px] font-medium">
+                  <span className="text-zinc-500 uppercase tracking-wider">Sincronizado:</span>
+                  <span className="text-emerald-500 font-mono">
+                    {new Date(simStats.ranAt).toLocaleTimeString('pt-BR')}
+                  </span>
+                </div>
+              )}
+              <WeatherIndicator />
+              <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowGeoAnchorMenu(v => !v)}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-zinc-950/50 rounded-md border border-zinc-800/50 hover:border-zinc-700 transition-colors"
+                    title="Localização-âncora usada para georreferenciar INPs com coordenadas locais"
+                  >
+                    <MapPin className="w-3 h-3 text-cyan-400" />
+                    <span className="text-[11px] text-zinc-200 font-medium">
+                      {geoAnchor.label ?? `${geoAnchor.lat.toFixed(3)}, ${geoAnchor.lng.toFixed(3)}`}
+                    </span>
+                    <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${showGeoAnchorMenu ? 'rotate-180' : ''}`} />
+                  </button>
+                  {showGeoAnchorMenu && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setShowGeoAnchorMenu(false)}
+                      />
+                      <div className="absolute right-0 top-full mt-1 z-50 w-72 rounded-lg border border-zinc-800 bg-zinc-950 shadow-2xl">
+                        <div className="px-3 py-2 border-b border-zinc-800">
+                          <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Cidades</div>
+                        </div>
+                        <div className="max-h-60 overflow-auto py-1">
+                          {ANCHOR_PRESETS.map((preset) => {
+                            const isActive = preset.label === geoAnchor.label;
+                            return (
+                              <button
+                                key={preset.label}
+                                type="button"
+                                onClick={() => {
+                                  setGeoAnchor(preset);
+                                  setShowGeoAnchorMenu(false);
+                                }}
+                                className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                                  isActive ? 'bg-cyan-500/10 text-cyan-300' : 'text-zinc-200 hover:bg-zinc-900'
+                                }`}
+                              >
+                                <span className="font-medium">{preset.label}</span>
+                                <span className="text-[10px] text-zinc-500 font-mono">
+                                  {preset.lat.toFixed(2)}, {preset.lng.toFixed(2)}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="px-3 py-2 border-t border-zinc-800">
+                          <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold mb-1">Personalizado</div>
+                          <form
+                            className="flex items-center gap-1"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const formData = new FormData(e.currentTarget);
+                              const lat = parseFloat(String(formData.get('lat') ?? ''));
+                              const lng = parseFloat(String(formData.get('lng') ?? ''));
+                              if (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+                                setGeoAnchor({ lat, lng, label: `${lat.toFixed(3)}, ${lng.toFixed(3)}` });
+                                setShowGeoAnchorMenu(false);
+                              }
+                            }}
+                          >
+                            <input
+                              name="lat"
+                              type="number"
+                              step="0.0001"
+                              defaultValue={geoAnchor.lat}
+                              placeholder="Lat"
+                              className="w-20 rounded border border-zinc-800 bg-black px-2 py-1 text-[11px] text-zinc-100 focus:border-cyan-500 focus:outline-none"
+                            />
+                            <input
+                              name="lng"
+                              type="number"
+                              step="0.0001"
+                              defaultValue={geoAnchor.lng}
+                              placeholder="Lng"
+                              className="w-20 rounded border border-zinc-800 bg-black px-2 py-1 text-[11px] text-zinc-100 focus:border-cyan-500 focus:outline-none"
+                            />
+                            <button
+                              type="submit"
+                              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-bold text-zinc-950 hover:bg-cyan-400 transition-colors"
+                            >
+                              Aplicar
+                            </button>
+                          </form>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {networkData && (
+              <div className="flex items-center gap-3">
+                {fileName && (
                 <button
                   onClick={() => {
                     setNetworkData(null);
@@ -1848,21 +2237,21 @@ export default function Home() {
                     setAISectorizationScenarios([]);
                     setActiveAISectorizationScenarioId(null);
                   }}
-                  className="flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-white hover:border-zinc-600 transition-all active:scale-95"
+                  className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-white hover:border-zinc-600 transition-all active:scale-95"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Trocar Modelo
                 </button>
               )}
-              
-              <div className="h-8 w-px bg-zinc-800 mx-1 hidden md:block" />
+
+              <div className="h-6 w-px bg-zinc-800 mx-1 hidden md:block" />
 
               {/* Undo / Redo */}
-              <div className="flex items-center gap-0.5 rounded-xl border border-zinc-800 bg-zinc-950 p-0.5">
+              <div className="flex items-center gap-0.5 rounded-lg border border-zinc-800 bg-zinc-950 p-0.5">
                 <button
                   onClick={handleUndo}
                   disabled={networkPast.length === 0}
-                  className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-cyan-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-cyan-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   title={`Desfazer (Ctrl+Z)${networkPast.length > 0 ? ` — ${networkPast.length} ação(ões)` : ''}`}
                 >
                   <Undo2 className="w-3.5 h-3.5" />
@@ -1870,7 +2259,7 @@ export default function Home() {
                 <button
                   onClick={handleRedo}
                   disabled={networkFuture.length === 0}
-                  className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-cyan-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-cyan-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   title={`Refazer (Ctrl+Shift+Z)${networkFuture.length > 0 ? ` — ${networkFuture.length} ação(ões)` : ''}`}
                 >
                   <Redo2 className="w-3.5 h-3.5" />
@@ -1879,21 +2268,21 @@ export default function Home() {
 
               <button
                 onClick={downloadRegeneratedInp}
-                className="flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600 transition-all active:scale-95"
+                className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600 transition-all active:scale-95"
               >
-                <Download className="w-4 h-4" />
+                <Download className="w-3.5 h-3.5" />
                 <span className="hidden lg:inline">Regenerar</span> INP
               </button>
 
               <button
                 onClick={exportMetersToShp}
-                className="flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600 transition-all active:scale-95"
+                className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600 transition-all active:scale-95"
               >
-                <MapPin className="w-4 h-4" />
+                <MapPin className="w-3.5 h-3.5" />
                 <span className="hidden lg:inline">Exportar</span> SHP
               </button>
 
-              <div className="flex items-center gap-2 text-xs border border-zinc-800 rounded-xl bg-zinc-950 px-3 py-1.5">
+              <div className="flex items-center gap-2 text-xs border border-zinc-800 rounded-lg bg-zinc-950 px-2.5 py-1">
                 <Waves className="w-3.5 h-3.5 text-zinc-500" />
                 <select
                   value={simDurationHours}
@@ -1911,7 +2300,7 @@ export default function Home() {
               <button
                 onClick={runSimulation}
                 disabled={isSimulating}
-                className={`flex items-center gap-2 text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg transition-all active:scale-95 ${
+                className={`flex items-center gap-2 text-xs font-bold px-4 py-1.5 rounded-lg shadow-lg transition-all active:scale-95 ${
                   isSimulating 
                     ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' 
                     : 'bg-red-600 text-white hover:bg-red-500 shadow-red-900/20 hover:shadow-red-600/20'
@@ -1974,29 +2363,38 @@ export default function Home() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col min-h-0">
-            <div className="border border-zinc-800 bg-black rounded-lg mb-3 flex-shrink-0 px-2">
-              <nav className="flex gap-1 -mb-px overflow-x-auto">
+          <div className="flex-1 flex min-h-0 gap-3">
+            {/* Sidebar vertical com as abas (substitui a antiga barra horizontal). */}
+            <aside className="w-52 flex-shrink-0 flex flex-col rounded-lg border border-zinc-800 bg-black overflow-hidden">
+              <div className="px-3 py-2 border-b border-zinc-800/80">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Plataforma</div>
+                <div className="text-xs text-zinc-300 font-semibold">Navegação</div>
+              </div>
+              <nav className="flex-1 overflow-y-auto py-1">
                 {TABS.map(t => {
                   const Icon = t.icon;
+                  const active = tab === t.key;
                   return (
                     <button
                       key={t.key}
                       onClick={() => selectTab(t.key)}
-                      className={`flex items-center gap-2 px-4 py-2.5 text-sm border-b-2 transition-colors whitespace-nowrap ${tab === t.key
-                          ? 'border-red-500 text-zinc-50 font-medium'
-                          : 'border-transparent text-zinc-500 hover:text-zinc-200'
-                        }`}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm border-l-2 transition-colors ${
+                        active
+                          ? 'border-red-500 bg-red-500/10 text-zinc-50 font-medium'
+                          : 'border-transparent text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900/60'
+                      }`}
                     >
-                      <Icon className="w-4 h-4" />
-                      {t.label}
+                      <Icon className={`w-4 h-4 flex-shrink-0 ${active ? 'text-red-400' : ''}`} />
+                      <span className="truncate text-left">{t.label}</span>
                     </button>
                   );
                 })}
               </nav>
-            </div>
+            </aside>
 
-            <TimeSlider 
+            <div className="flex-1 min-w-0 flex flex-col min-h-0">
+
+            <TimeSlider
               timeSeries={networkData.timeSeries}
               selectedTimeIndex={selectedTimeIndex}
               onTimeChange={applyTimestep}
@@ -2061,6 +2459,7 @@ export default function Home() {
                           title="Cor dos nós"
                         >
                           <option value="pressure">◯ Pressão</option>
+                          <option value="elevation">◯ Elevação</option>
                           <option value="type">◯ Tipo</option>
                         </select>
                         <select
@@ -2298,13 +2697,13 @@ export default function Home() {
                   <div className="flex flex-col h-full min-h-0">
                     <div className="flex items-center gap-3 mb-2 text-xs flex-wrap">
                       <span className="text-zinc-500">Legenda dos nós:</span>
-                      {(['type', 'pressure'] as NodeColorMode[]).map(m => (
+                      {(['type', 'pressure', 'elevation'] as NodeColorMode[]).map(m => (
                         <button
                           key={m}
                           onClick={() => setNodeColorMode(m)}
                           className={`px-2 py-1 rounded border ${nodeColorMode === m ? 'bg-red-500 text-white border-red-500' : 'bg-zinc-950 text-zinc-300 border-zinc-800'}`}
                         >
-                          {m === 'type' ? 'Tipo' : 'Pressão'}
+                          {m === 'type' ? 'Tipo' : m === 'pressure' ? 'Pressão' : 'Elevação'}
                         </button>
                       ))}
                       <span className="text-zinc-500 ml-3">Exibir nos trechos:</span>
@@ -2349,6 +2748,19 @@ export default function Home() {
                         Criar Setorização IA
                       </button>
 
+                      <button
+                        onClick={() => setShowQuickModelPanel((prev) => !prev)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded border transition-colors ${
+                          showQuickModelPanel
+                            ? 'bg-cyan-500/20 text-cyan-200 border-cyan-500/50'
+                            : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:border-zinc-600'
+                        }`}
+                        title="Abrir painel rápido para criar elementos do EPANET com formulário"
+                      >
+                        <Droplets className="w-3.5 h-3.5" />
+                        Modelo Hidráulico
+                      </button>
+
                       <div className="flex items-center gap-2 bg-zinc-950/50 border border-zinc-800 p-1.5 rounded-lg px-3">
                         <span className="text-[10px] uppercase font-bold text-zinc-500">Exibir polígonos</span>
                         <button
@@ -2383,10 +2795,53 @@ export default function Home() {
                         selectedSmartSensorId={selectedSmartSensorId}
                         onAddSmartSensor={handleAddSmartSensor}
                         onSmartSensorClick={handleSmartSensorMapClick}
-                        editModeOverride={showModelagemPanel ? gisEditMode : undefined}
-                        onEditModeChange={showModelagemPanel ? setGisEditMode : undefined}
+                        editModeOverride={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft) ? gisEditMode : undefined}
+                        onEditModeChange={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft) ? setGisEditMode : undefined}
+                        onPipeVertexAdded={handlePipeVertexAdded}
+                        onPipeVertexMoved={handlePipeVertexMoved}
+                        onPipeVertexDeleted={handlePipeVertexDeleted}
+                        anchor={geoAnchor}
                       />
+                      {pendingHydraulicDraft && (
+                        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-cyan-500/50 bg-zinc-950/95 text-cyan-200 text-xs shadow-lg backdrop-blur-sm">
+                          <Droplets className="w-3.5 h-3.5" />
+                          <span>
+                            <b className="text-cyan-100">{pendingHydraulicDraft.id}</b>{' · '}
+                            {isNodeDraft(pendingHydraulicDraft)
+                              ? 'clique no mapa para posicionar'
+                              : 'clique no nó inicial e depois no nó final'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => { setPendingHydraulicDraft(null); setGisEditMode('select'); }}
+                            className="ml-1 text-zinc-400 hover:text-red-400 underline-offset-2 hover:underline"
+                          >
+                            cancelar
+                          </button>
+                        </div>
+                      )}
+                      {!pendingHydraulicDraft && lastHydraulicDraft && (
+                        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-1.5 rounded-md border border-zinc-700/60 bg-zinc-950/90 text-[11px] text-zinc-300 shadow-md backdrop-blur-sm">
+                          <kbd className="px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-900 font-mono text-[10px] text-cyan-200">ESPAÇO</kbd>
+                          <span>repete último elemento ({lastHydraulicDraft.kind})</span>
+                          <button
+                            type="button"
+                            onClick={() => setLastHydraulicDraft(null)}
+                            className="ml-1 text-zinc-500 hover:text-zinc-200"
+                            title="Dispensar"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      )}
                     </div>
+                    <QuickHydraulicModelPanel
+                      open={showQuickModelPanel}
+                      data={networkData}
+                      onClose={() => { setShowQuickModelPanel(false); setQuickModelInitialKind(undefined); }}
+                      onCommit={commitHydraulicDraft}
+                      initialKind={quickModelInitialKind}
+                    />
                   </div>
                 )}
 
@@ -2515,6 +2970,11 @@ export default function Home() {
                           setShowSectorPolygons={setShowSectorPolygons}
                           nodeColorMode={nodeColorMode}
                           linkColorMode={linkColorMode}
+                          onTransformNodeKind={handleTransformNodeKind}
+                          onPipeVertexAdded={handlePipeVertexAdded}
+                          onPipeVertexMoved={handlePipeVertexMoved}
+                          onPipeVertexDeleted={handlePipeVertexDeleted}
+                          anchor={geoAnchor}
                         />
                       )}
 
@@ -2566,7 +3026,12 @@ export default function Home() {
 
                 {tab === 'inventario' && (
                   <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 h-full overflow-auto">
-                    <InventoryTab data={networkData} customerMeters={customerMeters} sectors={sectors} />
+                    <InventoryTab
+                      data={networkData}
+                      customerMeters={customerMeters}
+                      sectors={sectors}
+                      onViewIn3D={(asset) => setViewer3DAsset(asset)}
+                    />
                   </div>
                 )}
 
@@ -2750,9 +3215,16 @@ export default function Home() {
                 </div>
               )}
             </div>
+            </div>
           </div>
         )}
       </main>
+
+      <AssetViewer3D
+        asset={viewer3DAsset}
+        network={networkData ?? undefined}
+        onClose={() => setViewer3DAsset(null)}
+      />
     </div>
   );
 }

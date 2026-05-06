@@ -1,7 +1,7 @@
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson';
 import dagre from 'dagre';
 import { LinkElement, NetworkData, NodeElement } from '../types/epanet';
-import { buildGeoTransform, GeoTransform } from './geoTransform';
+import { buildGeoTransform, GeoAnchor, GeoTransform } from './geoTransform';
 
 export interface NodeFeatureProps {
   id: string;
@@ -41,10 +41,16 @@ export interface LinkFeatureProps {
   velocityAlert?: 'high' | null;
 }
 
+export interface PipeVertexFeatureProps {
+  linkId: string;
+  vertexIndex: number;
+}
+
 export interface NetworkGeoJson {
   nodes: FeatureCollection<Point, NodeFeatureProps>;
   links: FeatureCollection<LineString, LinkFeatureProps>;
   specialLinks: FeatureCollection<Point, LinkFeatureProps>;
+  pipeVertices: FeatureCollection<Point, PipeVertexFeatureProps>;
   bounds: [number, number, number, number] | null;
   transform: GeoTransform;
 }
@@ -144,10 +150,10 @@ function resolveNodeCoordinates(data: NetworkData): Record<string, { x: number; 
   return coords;
 }
 
-export function networkToGeoJson(data: NetworkData): NetworkGeoJson {
+export function networkToGeoJson(data: NetworkData, anchor?: GeoAnchor): NetworkGeoJson {
   const coords = resolveNodeCoordinates(data);
   const points = Object.values(coords).map(({ x, y }) => ({ x, y }));
-  const transform = buildGeoTransform(points);
+  const transform = buildGeoTransform(points, anchor);
 
   const nodeFeatures: Feature<Point, NodeFeatureProps>[] = [];
   let west = Infinity;
@@ -175,6 +181,7 @@ export function networkToGeoJson(data: NetworkData): NetworkGeoJson {
 
   const linkFeatures: Feature<LineString, LinkFeatureProps>[] = [];
   const specialLinkFeatures: Feature<Point, LinkFeatureProps>[] = [];
+  const pipeVertexFeatures: Feature<Point, PipeVertexFeatureProps>[] = [];
 
   for (const link of Object.values(data.links)) {
     const a = coords[link.node1];
@@ -185,24 +192,39 @@ export function networkToGeoJson(data: NetworkData): NetworkGeoJson {
     const bLngLat = transform.toLngLat(b.x, b.y);
     const props = linkProps(link);
 
+    const vertexLngLats: [number, number][] = [];
+    if (Array.isArray(link.vertices)) {
+      for (const v of link.vertices) {
+        if (!Number.isFinite(v?.x) || !Number.isFinite(v?.y)) continue;
+        vertexLngLats.push(transform.toLngLat(v.x, v.y));
+      }
+    }
+
+    const polyline: [number, number][] = [aLngLat, ...vertexLngLats, bLngLat];
+
     linkFeatures.push({
       type: 'Feature',
       id: link.id,
-      geometry: { type: 'LineString', coordinates: [aLngLat, bLngLat] },
+      geometry: { type: 'LineString', coordinates: polyline },
       properties: props,
     });
 
+    vertexLngLats.forEach((coord, idx) => {
+      pipeVertexFeatures.push({
+        type: 'Feature',
+        id: `${link.id}::v${idx}`,
+        geometry: { type: 'Point', coordinates: coord },
+        properties: { linkId: link.id, vertexIndex: idx },
+      });
+    });
+
     if (link.type === 'pump' || link.type === 'valve') {
+      // Símbolo posicionado no ponto médio geométrico da polilinha (em comprimento).
+      const mid = midpointAlongPolyline(polyline);
       specialLinkFeatures.push({
         type: 'Feature',
         id: `${link.id}::sym`,
-        geometry: {
-          type: 'Point',
-          coordinates: [
-            (aLngLat[0] + bLngLat[0]) / 2,
-            (aLngLat[1] + bLngLat[1]) / 2,
-          ],
-        },
+        geometry: { type: 'Point', coordinates: mid },
         properties: props,
       });
     }
@@ -212,7 +234,36 @@ export function networkToGeoJson(data: NetworkData): NetworkGeoJson {
     nodes: { type: 'FeatureCollection', features: nodeFeatures },
     links: { type: 'FeatureCollection', features: linkFeatures },
     specialLinks: { type: 'FeatureCollection', features: specialLinkFeatures },
+    pipeVertices: { type: 'FeatureCollection', features: pipeVertexFeatures },
     bounds: hasBounds ? [west, south, east, north] : null,
     transform,
   };
+}
+
+function midpointAlongPolyline(coords: [number, number][]): [number, number] {
+  if (coords.length === 0) return [0, 0];
+  if (coords.length === 1) return coords[0];
+  let total = 0;
+  const segLens: number[] = [];
+  for (let i = 0; i < coords.length - 1; i++) {
+    const dx = coords[i + 1][0] - coords[i][0];
+    const dy = coords[i + 1][1] - coords[i][1];
+    const len = Math.hypot(dx, dy);
+    segLens.push(len);
+    total += len;
+  }
+  if (total === 0) return coords[0];
+  const target = total / 2;
+  let acc = 0;
+  for (let i = 0; i < segLens.length; i++) {
+    if (acc + segLens[i] >= target) {
+      const t = segLens[i] === 0 ? 0 : (target - acc) / segLens[i];
+      return [
+        coords[i][0] + (coords[i + 1][0] - coords[i][0]) * t,
+        coords[i][1] + (coords[i + 1][1] - coords[i][1]) * t,
+      ];
+    }
+    acc += segLens[i];
+  }
+  return coords[coords.length - 1];
 }

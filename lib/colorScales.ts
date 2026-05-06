@@ -1,7 +1,7 @@
 // Escalas de cores para representação hidráulica.
 // Cores escolhidas para boa leitura em fundos claros e escuros.
 
-export type NodeColorMode = 'type' | 'pressure';
+export type NodeColorMode = 'type' | 'pressure' | 'elevation';
 export type LinkColorMode = 'type' | 'flow' | 'velocity' | 'diameter';
 
 export interface ColorRange {
@@ -16,6 +16,15 @@ export const PRESSURE_RANGES: Array<{ max: number; color: string; label: string 
   { max: 40,  color: '#f97316', label: '25–39,9 mca' },
   { max: 50,  color: '#dc2626', label: '40–49,9 mca' },
   { max: Infinity, color: '#a855f7', label: '> 50 mca' },
+];
+
+export const ELEVATION_RANGES: Array<{ max: number; color: string; label: string }> = [
+  { max: 0,    color: '#1e3a8a', label: 'Abaixo do nível do mar (< 0 m)' },
+  { max: 50,   color: '#06b6d4', label: '0–49,9 m' },
+  { max: 200,  color: '#22c55e', label: '50–199,9 m' },
+  { max: 500,  color: '#84cc16', label: '200–499,9 m' },
+  { max: 1000, color: '#f97316', label: '500–999,9 m' },
+  { max: Infinity, color: '#dc2626', label: '≥ 1000 m' },
 ];
 
 export const VELOCITY_RANGES: Array<{ max: number; color: string; label: string }> = [
@@ -41,6 +50,14 @@ export function pressureToColor(p?: number): string {
     if (p < r.max) return r.color;
   }
   return PRESSURE_RANGES[PRESSURE_RANGES.length - 1].color;
+}
+
+export function elevationToColor(e?: number): string {
+  if (e === undefined || Number.isNaN(e)) return '#94a3b8';
+  for (const r of ELEVATION_RANGES) {
+    if (e < r.max) return r.color;
+  }
+  return ELEVATION_RANGES[ELEVATION_RANGES.length - 1].color;
 }
 
 export function velocityToColor(v?: number): string {

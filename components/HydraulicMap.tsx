@@ -7,10 +7,11 @@ import maplibregl, { Map as MLMap, MapMouseEvent, MapGeoJSONFeature } from 'mapl
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { NetworkData, NodeElement, LinkElement, Sector, SmartInstalledSensor, SmartSensorRecommendation } from '../types/epanet';
 import { networkToGeoJson, NetworkGeoJson } from '../lib/inpToGeoJson';
+import { GeoAnchor } from '../lib/geoTransform';
 import {
   Basemap, BASEMAP_STYLES, EditMode, LayerVisibility, useMapState,
 } from '../lib/useMapState';
-import { NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
+import { NodeColorMode, LinkColorMode, PRESSURE_RANGES, ELEVATION_RANGES } from '../lib/colorScales';
 import {
   Layers as LayersIcon, Move, MousePointer2, PlusCircle, Spline, Trash2,
   MapPin, Sun, Moon, Globe2, Square, LassoSelect, Target, SlidersHorizontal,
@@ -47,6 +48,24 @@ interface HydraulicMapProps {
   legendOverlay?: React.ReactNode;
   editModeOverride?: EditMode;
   onEditModeChange?: (mode: EditMode) => void;
+  // Tipo de nó atualmente selecionado pela ferramenta "Inserir Nó"
+  // (controlado pelo painel da aba Modelagem). Quando undefined,
+  // o mapa cria sempre 'junction' por padrão.
+  activeNodeKind?: 'junction' | 'reservoir' | 'tank';
+  // Disparado quando o usuário, em modo addNode com kind = 'reservoir'/'tank',
+  // clica sobre uma junction existente — converte o nó em vez de duplicá-lo.
+  onTransformNodeKind?: (id: string, kind: 'reservoir' | 'tank') => void;
+  // Disparado quando o usuário, em modo addPipe segurando Ctrl, clica próximo
+  // a um tubo existente — adiciona um vértice de curvatura puramente geométrico.
+  onPipeVertexAdded?: (linkId: string, lng: number, lat: number) => void;
+  // Disparado para mover um vértice geométrico já existente (drag).
+  onPipeVertexMoved?: (linkId: string, vertexIndex: number, lng: number, lat: number) => void;
+  // Disparado para deletar um vértice geométrico (alt+click ou modo delete).
+  onPipeVertexDeleted?: (linkId: string, vertexIndex: number) => void;
+  // Anchor geográfico usado quando o INP traz coordenadas locais arbitrárias.
+  // Quando o INP já traz lat/lng ou UTM Sul brasileiro, esse parâmetro é
+  // ignorado.
+  anchor?: GeoAnchor;
 }
 
 // IDs de fontes/camadas no MapLibre
@@ -85,7 +104,48 @@ const SRC_DRAW_POLYGON = 'src-draw-polygon';
 const LYR_DRAW_POLYGON = 'lyr-draw-polygon';
 const LYR_DRAW_POLYGON_STROKE = 'lyr-draw-polygon-stroke';
 const LYR_DRAW_POLYGON_VERTICES = 'lyr-draw-polygon-vertices';
+
+// Vértices geométricos dos tubos (seção [VERTICES] do EPANET).
+// São pontos puramente visuais — não viram nó hidráulico.
+const SRC_PIPE_VERTICES = 'src-pipe-vertices';
+const LYR_PIPE_VERTICES = 'lyr-pipe-vertices';
+
+// Mapeia um feature renderizado para o nome da categoria em pt-BR usado
+// no tooltip de proximidade. Cobre nós, links e sensores IA — tudo o que
+// é clicável no mapa.
+function labelForFeature(f: MapGeoJSONFeature): string | null {
+  const p = f.properties || {};
+  const layerId = f.layer?.id;
+  if (layerId === LYR_SMART_SENSORS || layerId === LYR_SMART_SENSOR_SYMBOLS) {
+    const t = (p.sensorType as string) || '';
+    if (t === 'pressure') return 'Sensor de pressão';
+    if (t === 'flow') return 'Sensor de vazão';
+    if (t === 'level') return 'Sensor de nível';
+    return 'Sensor IA';
+  }
+  const kind = (p.kind as string) || '';
+  switch (kind) {
+    case 'junction': return 'Junção';
+    case 'reservoir': return 'Reservatório';
+    case 'tank': return 'Tanque';
+    case 'pipe': return 'Tubo';
+    case 'pump': return 'Bomba';
+    case 'valve': return 'Válvula';
+    default: break;
+  }
+  // Fallback baseado na camada — caso o kind venha vazio.
+  if (layerId === LYR_VALVE_NODE || layerId === LYR_VALVES) return 'Válvula';
+  if (layerId === LYR_PUMPS) return 'Bomba';
+  if (layerId === LYR_RESERVOIRS) return 'Reservatório';
+  if (layerId === LYR_TANKS) return 'Tanque';
+  if (layerId === LYR_JUNCTIONS) return 'Junção';
+  if (layerId === LYR_PIPES || layerId === LYR_LINKS_HIT) return 'Tubo';
+  if (layerId === LYR_SPECIAL) return 'Especial';
+  return null;
+}
+
 const PIPE_SNAP_RADIUS_PX = 14;
+const PIPE_VERTEX_HIT_RADIUS_PX = 10;
 
 export default function HydraulicMap({
   data, onElementClick,
@@ -95,6 +155,8 @@ export default function HydraulicMap({
   smartSensorRecommendations = [], smartInstalledSensors = [], selectedSmartSensorId = null, onAddSmartSensor, onSmartSensorClick,
   hideDefaultLegend = false, legendOverlay,
   editModeOverride, onEditModeChange,
+  activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexMoved, onPipeVertexDeleted,
+  anchor,
 }: HydraulicMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -112,12 +174,14 @@ export default function HydraulicMap({
   const [showLayersPanel, setShowLayersPanel] = useState(true);
   const [pendingFirstNode, setPendingFirstNode] = useState<string | null>(null);
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
+  const [proximityHover, setProximityHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const draggingRef = useRef<string | null>(null);
   const draggingVertexRef = useRef<{ sectorId: string; vertexIndex: number } | null>(null);
   const draggingSectorRef = useRef<{ sectorId: string; lastLngLat: [number, number] } | null>(null);
+  const draggingPipeVertexRef = useRef<{ linkId: string; vertexIndex: number } | null>(null);
   const sectorGeoJsonRef = useRef<GeoJSON.FeatureCollection>({ type: 'FeatureCollection', features: [] });
 
-  const geo: NetworkGeoJson = useMemo(() => networkToGeoJson(data), [data]);
+  const geo: NetworkGeoJson = useMemo(() => networkToGeoJson(data, anchor), [data, anchor]);
 
   const smartSensorsGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
     const recommendedFeatures: GeoJSON.Feature[] = smartSensorRecommendations.map((sensor) => {
@@ -192,6 +256,23 @@ export default function HydraulicMap({
       ['==', ['typeof', ['get', 'pressure']], 'number'],
       ['step', ['get', 'pressure'], ranges[0].color, ...stops],
       '#3b82f6',
+    ] as unknown as maplibregl.ExpressionSpecification;
+  }, []);
+
+  // Cor por elevação (expressão MapLibre)
+  const elevationColorExpr = useMemo(() => {
+    const ranges = ELEVATION_RANGES;
+    const stops: (string | number)[] = [];
+    let prevColor = ranges[0].color;
+    for (const r of ranges) {
+      stops.push(r.max === Infinity ? 999999 : r.max, prevColor);
+      prevColor = r.color;
+    }
+    return [
+      'case',
+      ['==', ['typeof', ['get', 'elevation']], 'number'],
+      ['step', ['get', 'elevation'], ranges[0].color, ...stops],
+      '#94a3b8',
     ] as unknown as maplibregl.ExpressionSpecification;
   }, []);
 
@@ -272,6 +353,15 @@ export default function HydraulicMap({
     ] as unknown as maplibregl.ExpressionSpecification;
   }, []);
 
+  const junctionElevationLabelExpr = useMemo(() => {
+    return [
+      'case',
+      ['==', ['typeof', ['get', 'elevation']], 'number'],
+      ['concat', ['number-format', ['get', 'elevation'], { 'min-fraction-digits': 1, 'max-fraction-digits': 1 }], ' m'],
+      '',
+    ] as unknown as maplibregl.ExpressionSpecification;
+  }, []);
+
   // Inicialização do mapa (uma vez)
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -342,17 +432,44 @@ export default function HydraulicMap({
     const ls = m.getSource(SRC_LINKS) as maplibregl.GeoJSONSource | undefined;
     const ss = m.getSource(SRC_SPECIAL) as maplibregl.GeoJSONSource | undefined;
     const smartSource = m.getSource(SRC_SMART_SENSORS) as maplibregl.GeoJSONSource | undefined;
+    const verticesSource = m.getSource(SRC_PIPE_VERTICES) as maplibregl.GeoJSONSource | undefined;
     ns?.setData(geo.nodes);
     ls?.setData(geo.links);
     ss?.setData(geo.specialLinks);
     smartSource?.setData(smartSensorsGeoJson);
+    verticesSource?.setData(geo.pipeVertices);
   }, [geo, smartSensorsGeoJson, mapReady]);
 
-  // Mantem o mapa enquadrado na rede atual (INP -> GIS).
+  // Enquadra a rede no carregamento inicial e em trocas de modelo (mudança
+  // grande no centro). Edições incrementais — adicionar/mover nó — não
+  // disparam refit, mantendo o zoom/pan que o usuário escolheu.
+  const lastFitBoundsRef = useRef<[number, number, number, number] | null>(null);
   useEffect(() => {
     const m = mapRef.current;
     if (!m || !mapReady || !geo.bounds) return;
-    let [w, s, e, n] = geo.bounds;
+
+    const curr = geo.bounds;
+    const prev = lastFitBoundsRef.current;
+    let shouldFit = false;
+
+    if (!prev) {
+      shouldFit = true;
+    } else {
+      const prevCx = (prev[0] + prev[2]) / 2;
+      const prevCy = (prev[1] + prev[3]) / 2;
+      const currCx = (curr[0] + curr[2]) / 2;
+      const currCy = (curr[1] + curr[3]) / 2;
+      const prevW = Math.max(Math.abs(prev[2] - prev[0]), 1e-6);
+      const prevH = Math.max(Math.abs(prev[3] - prev[1]), 1e-6);
+      const dx = Math.abs(currCx - prevCx);
+      const dy = Math.abs(currCy - prevCy);
+      if (dx > prevW * 0.5 || dy > prevH * 0.5) shouldFit = true;
+    }
+
+    lastFitBoundsRef.current = curr;
+    if (!shouldFit) return;
+
+    let [w, s, e, n] = curr;
     if (w === e) { w -= 0.01; e += 0.01; }
     if (s === n) { s -= 0.01; n += 0.01; }
     m.fitBounds([w, s, e, n], { padding: 140, animate: false, maxZoom: 13 });
@@ -529,6 +646,9 @@ export default function HydraulicMap({
     }
     if (!m.getSource(SRC_SMART_SENSORS)) {
       m.addSource(SRC_SMART_SENSORS, { type: 'geojson', data: smartSensorsGeoJson });
+    }
+    if (!m.getSource(SRC_PIPE_VERTICES)) {
+      m.addSource(SRC_PIPE_VERTICES, { type: 'geojson', data: geo.pipeVertices });
     }
 
     if (!m.getLayer(LYR_LINKS_HIT)) {
@@ -766,6 +886,19 @@ export default function HydraulicMap({
         },
       });
     }
+    if (!m.getLayer(LYR_PIPE_VERTICES)) {
+      m.addLayer({
+        id: LYR_PIPE_VERTICES, type: 'circle', source: SRC_PIPE_VERTICES,
+        paint: {
+          // Quadradinho cinza claro distinto de junções (que são círculos pretos cheios).
+          'circle-radius': 4,
+          'circle-color': '#e5e7eb',
+          'circle-stroke-color': '#475569',
+          'circle-stroke-width': 1.2,
+          'circle-opacity': 0.95,
+        },
+      });
+    }
     if (!m.getLayer(LYR_SELECTED)) {
       m.addLayer({
         id: LYR_SELECTED, type: 'circle', source: SRC_NODES,
@@ -861,13 +994,15 @@ export default function HydraulicMap({
 
     applyPaintStyles(m);
     applyLayerVisibility(m, layers);
-  }, [geo, layers, pipeLabelExpr, junctionPressureLabelExpr, smartSensorsGeoJson, smartSensorColorExpr, smartSensorSymbolExpr]);
+  }, [geo, layers, pipeLabelExpr, junctionPressureLabelExpr, smartSensorsGeoJson, smartSensorColorExpr, smartSensorSymbolExpr, geo.pipeVertices]);
 
   const applyPaintStyles = useCallback((m: MLMap) => {
     if (m.getLayer(LYR_JUNCTIONS)) {
       m.setPaintProperty(
         LYR_JUNCTIONS, 'circle-color',
-        nodeColorMode === 'pressure' ? pressureColorExpr : '#111827'
+        nodeColorMode === 'pressure' ? pressureColorExpr
+          : nodeColorMode === 'elevation' ? elevationColorExpr
+          : '#111827'
       );
     }
     if (m.getLayer(LYR_PIPES)) {
@@ -887,9 +1022,15 @@ export default function HydraulicMap({
       m.setLayoutProperty(LYR_PIPE_LABELS, 'text-field', pipeLabelExpr);
     }
     if (m.getLayer(LYR_JUNCTION_LABELS)) {
-      m.setLayoutProperty(LYR_JUNCTION_LABELS, 'text-field', nodeColorMode === 'pressure' ? junctionPressureLabelExpr : '');
+      m.setLayoutProperty(
+        LYR_JUNCTION_LABELS,
+        'text-field',
+        nodeColorMode === 'pressure' ? junctionPressureLabelExpr
+          : nodeColorMode === 'elevation' ? junctionElevationLabelExpr
+          : ''
+      );
     }
-  }, [nodeColorMode, linkColorMode, pressureColorExpr, velocityColorExpr, widthByFlowExpr, diameterColorExpr, pipeLabelExpr, junctionPressureLabelExpr]);
+  }, [nodeColorMode, linkColorMode, pressureColorExpr, elevationColorExpr, velocityColorExpr, widthByFlowExpr, diameterColorExpr, pipeLabelExpr, junctionPressureLabelExpr, junctionElevationLabelExpr]);
 
   const applyLayerVisibility = useCallback((m: MLMap, lv: LayerVisibility) => {
     const set = (id: string, vis: boolean) => {
@@ -968,6 +1109,20 @@ export default function HydraulicMap({
     }
 
     return sensor;
+  }, []);
+
+  const findPipeVertexAt = useCallback((m: MLMap, e: MapMouseEvent): { linkId: string; vertexIndex: number } | null => {
+    const bbox: [[number, number], [number, number]] = [
+      [e.point.x - PIPE_VERTEX_HIT_RADIUS_PX, e.point.y - PIPE_VERTEX_HIT_RADIUS_PX],
+      [e.point.x + PIPE_VERTEX_HIT_RADIUS_PX, e.point.y + PIPE_VERTEX_HIT_RADIUS_PX],
+    ];
+    const features = m.queryRenderedFeatures(bbox, { layers: [LYR_PIPE_VERTICES] });
+    const f = features[0] as MapGeoJSONFeature | undefined;
+    if (!f?.properties) return null;
+    const linkId = String(f.properties.linkId || '');
+    const vertexIndex = Number(f.properties.vertexIndex);
+    if (!linkId || !Number.isFinite(vertexIndex)) return null;
+    return { linkId, vertexIndex };
   }, []);
 
   const findPipeSnapAt = useCallback((m: MLMap, e: MapMouseEvent): { linkId: string; lng: number; lat: number } | null => {
@@ -1076,8 +1231,13 @@ export default function HydraulicMap({
         }
       }
 
-      // Modo deletar
+      // Modo deletar — também remove vértices geométricos quando clicado sobre um.
       if (editMode === 'delete') {
+        const vertex = findPipeVertexAt(m, e);
+        if (vertex && onPipeVertexDeleted) {
+          onPipeVertexDeleted(vertex.linkId, vertex.vertexIndex);
+          return;
+        }
         const nodeId = findNodeIdAt(m, e);
         if (nodeId) {
           if (confirm(`Excluir o nó ${nodeId} e todos os trechos conectados?`)) {
@@ -1097,12 +1257,42 @@ export default function HydraulicMap({
 
       // Modo adicionar nó
       if (editMode === 'addNode') {
+        // Se a ferramenta atual é Reservatório/Tanque e o usuário clica sobre
+        // um nó existente, o sistema NÃO cria um elemento sobreposto: ele
+        // transforma o nó clicado no novo tipo, preservando id, coordenadas
+        // e conexões com tubos. Cria duplicado só se não houver nó sob o clique.
+        const targetKind = activeNodeKind;
+        if ((targetKind === 'reservoir' || targetKind === 'tank') && onTransformNodeKind) {
+          const nodeId = findNodeIdAt(m, e);
+          if (nodeId) {
+            const existing = data.nodes[nodeId];
+            // Mesmo tipo? Não faz nada (evita duplicação ou flicker).
+            if (existing && existing.type !== targetKind) {
+              onTransformNodeKind(nodeId, targetKind);
+            }
+            return;
+          }
+        }
         onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
         return;
       }
 
       // Modo adicionar tubo
       if (editMode === 'addPipe') {
+        // Ctrl/Meta + clique sobre um tubo existente => adiciona vértice
+        // de curvatura puramente geométrico (não cria junction).
+        const ctrl = !!(e.originalEvent as MouseEvent | undefined)?.ctrlKey
+          || !!(e.originalEvent as MouseEvent | undefined)?.metaKey;
+        if (ctrl && onPipeVertexAdded) {
+          const snap = findPipeSnapAt(m, e);
+          if (snap) {
+            onPipeVertexAdded(snap.linkId, snap.lng, snap.lat);
+            return;
+          }
+          // Sem tubo próximo: ignora o clique (não cria junction acidental).
+          return;
+        }
+
         const nodeId = findNodeIdAt(m, e);
 
         if (!pendingFirstNode) {
@@ -1272,6 +1462,19 @@ export default function HydraulicMap({
       }
 
       if (editMode !== 'move') return;
+
+      // Em modo move, prioriza vértice geométrico antes do nó (vértices são
+      // pontos menores e geralmente próximos do tubo).
+      if (onPipeVertexMoved) {
+        const vertex = findPipeVertexAt(m, e);
+        if (vertex) {
+          e.preventDefault();
+          draggingPipeVertexRef.current = vertex;
+          m.getCanvas().style.cursor = 'grabbing';
+          return;
+        }
+      }
+
       const nodeId = findNodeIdAt(m, e);
       if (!nodeId) return;
       e.preventDefault();
@@ -1367,6 +1570,48 @@ export default function HydraulicMap({
         return;
       }
 
+      // Caso 3: arrastando vértice geométrico de tubo
+      if (draggingPipeVertexRef.current) {
+        const { linkId, vertexIndex } = draggingPipeVertexRef.current;
+        const newPos: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+
+        // Atualiza visualmente a polilinha do tubo
+        const linksSrc = m.getSource(SRC_LINKS) as maplibregl.GeoJSONSource | undefined;
+        if (linksSrc) {
+          const updatedLinks = {
+            ...geo.links,
+            features: geo.links.features.map(f => {
+              if ((f.properties?.id as string | undefined) !== linkId) return f;
+              const coords = (f.geometry as GeoJSON.LineString).coordinates;
+              const newCoords = [...coords];
+              // polyline = [node1, v0, v1, ..., v_{k-1}, node2]
+              // vertexIndex i corresponde a newCoords[i + 1]
+              const target = vertexIndex + 1;
+              if (target > 0 && target < newCoords.length - 1) {
+                newCoords[target] = newPos;
+              }
+              return { ...f, geometry: { type: 'LineString' as const, coordinates: newCoords } };
+            }),
+          };
+          linksSrc.setData(updatedLinks);
+        }
+
+        // Atualiza visualmente o ponto do vértice
+        const verticesSrc = m.getSource(SRC_PIPE_VERTICES) as maplibregl.GeoJSONSource | undefined;
+        if (verticesSrc) {
+          const updatedVertices = {
+            ...geo.pipeVertices,
+            features: geo.pipeVertices.features.map(f => {
+              const props = f.properties;
+              if (!props || props.linkId !== linkId || props.vertexIndex !== vertexIndex) return f;
+              return { ...f, geometry: { type: 'Point' as const, coordinates: newPos } };
+            }),
+          };
+          verticesSrc.setData(updatedVertices);
+        }
+        return;
+      }
+
       const id = draggingRef.current;
       if (!id) return;
       // ... resto da lógica original de mover nó ...
@@ -1431,6 +1676,14 @@ export default function HydraulicMap({
         return;
       }
 
+      if (draggingPipeVertexRef.current) {
+        const { linkId, vertexIndex } = draggingPipeVertexRef.current;
+        draggingPipeVertexRef.current = null;
+        m.getCanvas().style.cursor = '';
+        onPipeVertexMoved?.(linkId, vertexIndex, e.lngLat.lng, e.lngLat.lat);
+        return;
+      }
+
       const id = draggingRef.current;
       if (!id) return;
       draggingRef.current = null;
@@ -1466,7 +1719,9 @@ export default function HydraulicMap({
     editMode, mapReady, data,
     geo, onElementClick, onNodeMoved, onNodeAdded, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
     showSectorPolygons, onSectorGeometryUpdated,
-    pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, onAddSmartSensor, onSmartSensorClick,
+    pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, findPipeVertexAt,
+    onAddSmartSensor, onSmartSensorClick,
+    activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexDeleted, onPipeVertexMoved,
   ]);
 
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
@@ -1486,6 +1741,172 @@ export default function HydraulicMap({
       }
     }
   }, [editMode]);
+
+  // Pan com botão do meio (scroll do mouse) — funciona em qualquer modo
+  // de edição, sem alterar o pan padrão (botão esquerdo). Bloqueia o
+  // auto-scroll do Windows que aparece com middle-click.
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady) return;
+    const canvas = m.getCanvas();
+
+    let panning = false;
+    let lastX = 0;
+    let lastY = 0;
+    let prevCursor = '';
+
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 1) return; // só middle-click
+      e.preventDefault();
+      panning = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      prevCursor = canvas.style.cursor;
+      canvas.style.cursor = 'grabbing';
+    };
+
+    const onMove = (e: MouseEvent) => {
+      if (!panning) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      m.panBy([-dx, -dy], { duration: 0 });
+    };
+
+    const stop = () => {
+      if (!panning) return;
+      panning = false;
+      canvas.style.cursor = prevCursor;
+    };
+
+    // Suprime o autoscroll padrão do Windows que abre com middle-click.
+    const onAuxClick = (e: MouseEvent) => { if (e.button === 1) e.preventDefault(); };
+
+    canvas.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', stop);
+    window.addEventListener('blur', stop);
+    canvas.addEventListener('auxclick', onAuxClick);
+
+    return () => {
+      canvas.removeEventListener('mousedown', onDown);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', stop);
+      window.removeEventListener('blur', stop);
+      canvas.removeEventListener('auxclick', onAuxClick);
+    };
+  }, [mapReady]);
+
+  // Tooltip de proximidade: mostra `ID: <id>` perto do cursor quando ele
+  // chega a 12 px de qualquer elemento clicável (nó, link, sensor IA).
+  // Usa queryRenderedFeatures com bbox + rAF para evitar trabalho pesado
+  // por movimento do mouse.
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady) return;
+
+    const TOL = 12;
+    // Ordem de prioridade: sensores IA > nós (junctions/reservatórios/tanques/válvulas-nó)
+    // > links (tubos/bombas/válvulas). Setores ficam de fora porque o
+    // polígono cobre área grande e prenderia o tooltip permanentemente.
+    const PRIORITY_LAYERS: string[][] = [
+      [LYR_SMART_SENSORS],
+      [LYR_NODES_HIT, LYR_JUNCTIONS, LYR_RESERVOIRS, LYR_TANKS, LYR_VALVE_NODE],
+      [LYR_LINKS_HIT, LYR_PIPES, LYR_PUMPS, LYR_VALVES, LYR_SPECIAL],
+    ];
+
+    let rafId: number | null = null;
+    let lastEvent: MapMouseEvent | null = null;
+
+    const flush = () => {
+      rafId = null;
+      const e = lastEvent;
+      if (!e) return;
+
+      // Durante drag de nó/vértice o cursor está "ocupado": esconde o tooltip.
+      if (draggingRef.current || draggingPipeVertexRef.current || draggingVertexRef.current || draggingSectorRef.current) {
+        setProximityHover((prev) => (prev ? null : prev));
+        return;
+      }
+
+      const px = e.point.x;
+      const py = e.point.y;
+      const availableLayers = PRIORITY_LAYERS.map((group) =>
+        group.filter((layerId) => Boolean(m.getLayer(layerId)))
+      ).filter((g) => g.length > 0);
+      if (availableLayers.length === 0) {
+        setProximityHover((prev) => (prev ? null : prev));
+        return;
+      }
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [px - TOL, py - TOL],
+        [px + TOL, py + TOL],
+      ];
+
+      let foundLabel: string | null = null;
+      for (const layers of availableLayers) {
+        const features = m.queryRenderedFeatures(bbox, { layers });
+        if (features.length === 0) continue;
+
+        // Pega o feature com centroid mais próximo do cursor (em pixels).
+        let best: { label: string; dist2: number } | null = null;
+        for (const f of features) {
+          const label = labelForFeature(f);
+          if (!label) continue;
+          // Para escolher o mais próximo entre vários dentro da bbox,
+          // projeta o lngLat do centroide do feature de volta para tela.
+          let cx = px, cy = py;
+          if (f.geometry?.type === 'Point') {
+            const [lng, lat] = (f.geometry.coordinates as [number, number]);
+            const projected = m.project([lng, lat]);
+            cx = projected.x; cy = projected.y;
+          }
+          const dx = cx - px;
+          const dy = cy - py;
+          const d2 = dx * dx + dy * dy;
+          if (!best || d2 < best.dist2) best = { label, dist2: d2 };
+        }
+        if (best) { foundLabel = best.label; break; }
+      }
+
+      if (foundLabel) {
+        setProximityHover((prev) =>
+          prev && prev.label === foundLabel && prev.x === px && prev.y === py
+            ? prev
+            : { label: foundLabel, x: px, y: py }
+        );
+      } else {
+        setProximityHover((prev) => (prev ? null : prev));
+      }
+    };
+
+    const onMove = (e: MapMouseEvent) => {
+      lastEvent = e;
+      if (rafId == null) rafId = requestAnimationFrame(flush);
+    };
+
+    const onLeave = () => {
+      lastEvent = null;
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      setProximityHover((prev) => (prev ? null : prev));
+    };
+
+    m.on('mousemove', onMove);
+    m.on('mouseout', onLeave);
+    const canvas = m.getCanvas();
+    canvas.addEventListener('mouseleave', onLeave);
+
+    return () => {
+      m.off('mousemove', onMove);
+      m.off('mouseout', onLeave);
+      canvas.removeEventListener('mouseleave', onLeave);
+      if (rafId != null) cancelAnimationFrame(rafId);
+    };
+  }, [mapReady]);
 
   return (
     <div className="gis-map-surface w-full h-full min-h-[700px] border border-zinc-800 rounded-lg overflow-hidden relative bg-zinc-900">
@@ -1507,6 +1928,17 @@ export default function HydraulicMap({
         <MapLegend nodeColorMode={nodeColorMode} linkColorMode={linkColorMode} highlightColor={highlightColor} />
       )}
       {legendOverlay}
+      {proximityHover && (
+        <div
+          className="absolute z-[5000] rounded-md border border-zinc-700/60 bg-zinc-900/90 px-2 py-1 text-[11px] font-medium text-zinc-100 shadow-lg backdrop-blur-sm pointer-events-none whitespace-nowrap"
+          style={{
+            left: proximityHover.x + 14,
+            top: proximityHover.y + 14,
+          }}
+        >
+          {proximityHover.label}
+        </div>
+      )}
     </div>
   );
 }
@@ -1547,10 +1979,15 @@ function Toolbar({
         <Btn mode="delete" icon={Trash2} label="Excluir" />
       </div>
       {editMode === 'addPipe' && (
-        <div className="text-[11px] bg-amber-500/15 text-amber-200 border border-amber-500/40 rounded-md px-2 py-1">
-          {pendingFirstNode
-            ? `Selecione o segundo nó ou clique perto de um trecho para conectar (1º: ${pendingFirstNode})`
-            : 'Clique no primeiro nó'}
+        <div className="text-[11px] bg-amber-500/15 text-amber-200 border border-amber-500/40 rounded-md px-2 py-1 space-y-1">
+          <div>
+            {pendingFirstNode
+              ? `Selecione o segundo nó ou clique perto de um trecho para conectar (1º: ${pendingFirstNode})`
+              : 'Clique no primeiro nó'}
+          </div>
+          <div className="text-amber-100/70">
+            <span className="font-mono px-1 rounded bg-amber-500/20">Ctrl + clique</span> sobre um tubo: adiciona vértice de curvatura (sem criar nó hidráulico).
+          </div>
         </div>
       )}
       {editMode === 'addValve' && (

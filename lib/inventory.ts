@@ -290,39 +290,131 @@ export interface SectorStats {
   nome: string;
   cor?: string;
   nodeCount: number;
+  junctionCount: number;
+  reservoirCount: number;
+  tankCount: number;
   pipeCount: number;
+  pumpCount: number;
+  valveCount: number;
   pipeLengthM: number;
+  avgDiameterMm: number;
+  minDiameterMm: number;
+  maxDiameterMm: number;
+  totalDemandLps: number;
+  totalDemandM3Day: number;
   customerCount: number;
   volumeMensalEstimadoM3: number;
+  // Distribuição por material (nome → extensão)
+  materialBreakdown: Array<{ material: string; lengthM: number; pct: number }>;
+  // Faixa de cotas das junctions do setor
+  elevationMin?: number;
+  elevationMax?: number;
 }
 
 export function statsBySector(
   data: NetworkData,
   sectors: Sector[],
   customerMeters: CustomerMeter[],
+  headloss: HeadlossModel = 'H-W',
+  tags: Map<string, string> = new Map(),
 ): SectorStats[] {
   return sectors.map((sector) => {
     const linkIds = new Set(sector.linkIds);
-    const pipes = Object.values(data.links).filter(
-      (l) => l.type === 'pipe' && linkIds.has(l.id),
-    );
+    const nodeIds = new Set(sector.nodeIds);
+
+    const pipes: LinkLite[] = [];
+    let pumpCount = 0;
+    let valveCount = 0;
+    for (const link of Object.values(data.links)) {
+      if (!linkIds.has(link.id)) continue;
+      if (link.type === 'pipe') pipes.push(link);
+      else if (link.type === 'pump') pumpCount += 1;
+      else if (link.type === 'valve') valveCount += 1;
+    }
     const pipeLengthM = pipes.reduce((sum, p) => sum + (p.length || 0), 0);
+
+    let junctionCount = 0;
+    let reservoirCount = 0;
+    let tankCount = 0;
+    let totalDemandLps = 0;
+    const elevations: number[] = [];
+    for (const id of nodeIds) {
+      const node = data.nodes[id];
+      if (!node) continue;
+      if (node.type === 'junction') {
+        junctionCount += 1;
+        if (typeof node.demand === 'number' && node.demand > 0) totalDemandLps += node.demand;
+        if (typeof node.elevation === 'number') elevations.push(node.elevation);
+      } else if (node.type === 'reservoir') reservoirCount += 1;
+      else if (node.type === 'tank') tankCount += 1;
+    }
+
+    // Estatísticas de diâmetro nas tubulações do setor
+    let minD = Infinity;
+    let maxD = -Infinity;
+    let sumD = 0;
+    let countD = 0;
+    for (const p of pipes) {
+      const d = typeof p.diameter === 'number' ? p.diameter : NaN;
+      if (!Number.isFinite(d)) continue;
+      if (d < minD) minD = d;
+      if (d > maxD) maxD = d;
+      sumD += d;
+      countD += 1;
+    }
+
+    // Distribuição por material
+    const matMap = new Map<string, number>();
+    for (const p of pipes) {
+      const material = inferMaterial(p.roughness, headloss, tags.get(p.id));
+      matMap.set(material, (matMap.get(material) ?? 0) + (p.length || 0));
+    }
+    const materialBreakdown = Array.from(matMap.entries())
+      .map(([material, lengthM]) => ({
+        material,
+        lengthM,
+        pct: pipeLengthM > 0 ? (lengthM / pipeLengthM) * 100 : 0,
+      }))
+      .sort((a, b) => b.lengthM - a.lengthM);
+
     const sectorMeters = customerMeters.filter((m) => m.setorId === sector.id && m.ativo !== false);
     const volumeMensalEstimadoM3 = sectorMeters.reduce(
       (sum, m) => sum + (m.volumeMensalM3 || 0),
       0,
     );
+
     return {
       id: sector.id,
       nome: sector.nome,
       cor: sector.cor,
       nodeCount: sector.nodeIds.length,
+      junctionCount,
+      reservoirCount,
+      tankCount,
       pipeCount: pipes.length,
+      pumpCount,
+      valveCount,
       pipeLengthM,
+      avgDiameterMm: countD > 0 ? sumD / countD : 0,
+      minDiameterMm: Number.isFinite(minD) ? minD : 0,
+      maxDiameterMm: Number.isFinite(maxD) ? maxD : 0,
+      totalDemandLps,
+      totalDemandM3Day: totalDemandLps * 86.4,
       customerCount: sectorMeters.length,
       volumeMensalEstimadoM3,
+      materialBreakdown,
+      elevationMin: elevations.length > 0 ? Math.min(...elevations) : undefined,
+      elevationMax: elevations.length > 0 ? Math.max(...elevations) : undefined,
     };
   });
+}
+
+interface LinkLite {
+  id: string;
+  type: string;
+  diameter?: number;
+  length?: number;
+  roughness?: number;
 }
 
 export interface DemandStats {

@@ -172,6 +172,18 @@ export function parseInpFile(fileContent: string): NetworkData {
           };
         }
         break;
+      case 'VERTICES':
+        if (tokens.length >= 3 && links[id]) {
+          const vx = parseFloat(tokens[1]);
+          const vy = parseFloat(tokens[2]);
+          if (Number.isFinite(vx) && Number.isFinite(vy)) {
+            const link = links[id];
+            const list = Array.isArray(link.vertices) ? link.vertices.slice() : [];
+            list.push({ x: vx, y: vy });
+            links[id] = { ...link, vertices: list };
+          }
+        }
+        break;
       case 'SECTORS':
         {
           // ID | Nome | Cor | NodeIds | LinkIds | Geometry

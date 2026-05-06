@@ -1,6 +1,6 @@
 'use client';
 
-import { DIAMETER_RANGES, LinkColorMode, NodeColorMode, PRESSURE_RANGES, VELOCITY_RANGES } from '../lib/colorScales';
+import { DIAMETER_RANGES, ELEVATION_RANGES, LinkColorMode, NodeColorMode, PRESSURE_RANGES, VELOCITY_RANGES } from '../lib/colorScales';
 
 interface MapLegendProps {
   nodeColorMode: NodeColorMode;
@@ -22,6 +22,12 @@ export default function MapLegend({ nodeColorMode, linkColorMode, highlightColor
         {nodeColorMode === 'pressure' ? (
           <LegendSection title="Pressao nos nos">
             {PRESSURE_RANGES.map(range => (
+              <LegendRow key={range.label} color={range.color} label={range.label} shape="dot" />
+            ))}
+          </LegendSection>
+        ) : nodeColorMode === 'elevation' ? (
+          <LegendSection title="Elevacao das junctions">
+            {ELEVATION_RANGES.map(range => (
               <LegendRow key={range.label} color={range.color} label={range.label} shape="dot" />
             ))}
           </LegendSection>

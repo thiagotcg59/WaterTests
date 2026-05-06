@@ -7,6 +7,7 @@ import MapCursorOverlay from './MapCursorOverlay';
 import { LinkElement, NetworkData, NodeElement, Sector } from '../types/epanet';
 import { LinkColorMode, NodeColorMode } from '../lib/colorScales';
 import { EditMode } from '../lib/useMapState';
+import { GeoAnchor } from '../lib/geoTransform';
 
 // Re-exporta o tipo para manter compatibilidade com o page.tsx que importava daqui.
 export type { ValveTypeOption } from './GisModelagemPanel';
@@ -48,6 +49,13 @@ interface Props {
   setShowSectorPolygons: (v: boolean) => void;
   nodeColorMode: NodeColorMode;
   linkColorMode: LinkColorMode;
+  // Funcionalidades adicionais do mapa
+  onTransformNodeKind?: (id: string, kind: 'reservoir' | 'tank') => void;
+  onPipeVertexAdded?: (linkId: string, lng: number, lat: number) => void;
+  onPipeVertexMoved?: (linkId: string, vertexIndex: number, lng: number, lat: number) => void;
+  onPipeVertexDeleted?: (linkId: string, vertexIndex: number) => void;
+  // Anchor geográfico (propagado para o HydraulicMap)
+  anchor?: GeoAnchor;
 }
 
 export default function ModelagemMapaGisView({
@@ -81,6 +89,11 @@ export default function ModelagemMapaGisView({
   showSectorPolygons,
   nodeColorMode,
   linkColorMode,
+  onTransformNodeKind,
+  onPipeVertexAdded,
+  onPipeVertexMoved,
+  onPipeVertexDeleted,
+  anchor,
 }: Props) {
 
   // Não usamos `setShowSectorPolygons` aqui (a configuração fica em outras abas).
@@ -113,6 +126,12 @@ export default function ModelagemMapaGisView({
           highlightColor={highlightColor}
           editModeOverride={editMode}
           onEditModeChange={setEditMode}
+          activeNodeKind={activeNodeKind}
+          onTransformNodeKind={onTransformNodeKind}
+          onPipeVertexAdded={onPipeVertexAdded}
+          onPipeVertexMoved={onPipeVertexMoved}
+          onPipeVertexDeleted={onPipeVertexDeleted}
+          anchor={anchor}
         />
 
         {/* Cursor contextual com ícone do tipo de elemento ativo */}

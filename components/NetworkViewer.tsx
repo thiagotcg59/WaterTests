@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { ReactFlow, Background, Controls, Node as FlowNode, Edge as FlowEdge, MarkerType, Handle, Position, ReactFlowInstance, Panel } from '@xyflow/react';
+import { ReactFlow, Background, Controls, Node as FlowNode, Edge as FlowEdge, MarkerType, Handle, Position, ReactFlowInstance, Panel, useStore as useRfStore } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { NetworkData, ElementType, CustomerMeter } from '../types/epanet';
 import dagre from 'dagre';
@@ -43,6 +43,19 @@ interface NetworkViewerProps {
   linkOpacity?: number;
   symbolScale?: number;
   fitRequest?: number;
+}
+
+// Snap do zoom em passos de 0.1 — useRfStore só re-renderiza quando o valor
+// muda, então pular passos finos evita re-renderizar 100+ nós a cada pixel
+// de pan/zoom. Resultado é o mesmo visualmente.
+function useZoomSnapped() {
+  return useRfStore((s) => Math.round(s.transform[2] * 10) / 10);
+}
+// Faz com que labels e símbolos pequenos não somem em zoom out nem
+// fiquem gigantes em zoom in — equivalente a labels em screen-space do
+// maplibre, com clamping para ficar legível em qualquer extremo.
+function inverseZoomScale(zoom: number, min = 0.7, max = 1.8) {
+  return Math.max(min, Math.min(max, 1 / Math.max(zoom, 0.05)));
 }
 
 const dagreGraph = new dagre.graphlib.Graph();
@@ -99,7 +112,10 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
   const highlightColor = data.highlightColor;
   const dimmed = !!data.dimmed;
   const pressure = data.originalData.pressure;
-  const showPressureLabel = data.showPressureLabel && typeof pressure === 'number';
+  const zoom = useZoomSnapped();
+  // Em zoom muito baixo o label vira ruído visual sem informação legível.
+  const showPressureLabel = data.showPressureLabel && typeof pressure === 'number' && zoom >= 0.4;
+  const labelInverseScale = inverseZoomScale(zoom);
 
   let icon = <Circle className="w-2 h-2" fill={colorOverride || '#111827'} stroke={colorOverride || '#111827'} />;
   let bgColor = 'bg-white';
@@ -136,7 +152,10 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
     >
       <Handle type="target" position={Position.Top} className="opacity-0 w-1 h-1" />
       {showPressureLabel && (
-        <div className="absolute -top-9 left-1/2 z-10 -translate-x-1/2 rounded-md border border-zinc-300 bg-white/95 px-2 py-1 text-[12px] font-bold text-black shadow-md whitespace-nowrap pointer-events-none">
+        <div
+          className="absolute -top-9 left-1/2 z-10 rounded-md border border-zinc-300 bg-white/95 px-2 py-1 text-[12px] font-bold text-black shadow-md whitespace-nowrap pointer-events-none"
+          style={{ transform: `translateX(-50%) scale(${labelInverseScale})`, transformOrigin: 'center bottom' }}
+        >
           {pressure.toFixed(1)} mca
         </div>
       )}
@@ -144,7 +163,10 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
         <div className="w-2 h-2 rounded-full bg-white/60 shadow-inner" style={{ boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.2)' }} />
       ) : icon}
       <Handle type="source" position={Position.Bottom} className="opacity-0 w-1 h-1" />
-      <div className="absolute -bottom-10 text-[10px] font-mono text-zinc-700 bg-white/90 border border-zinc-200 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10 flex flex-col items-center">
+      <div
+        className="absolute -bottom-10 left-1/2 text-[10px] font-mono text-zinc-700 bg-white/90 border border-zinc-200 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10 flex flex-col items-center"
+        style={{ transform: `translateX(-50%) scale(${labelInverseScale})`, transformOrigin: 'center top' }}
+      >
         <span className="font-bold">{data.id}</span>
         {pressure !== undefined && (
           <span className="text-black font-semibold">{pressure.toFixed(1)} mca</span>
@@ -201,13 +223,18 @@ interface ValveMarkerNodeData {
 }
 
 const CustomCustomerMeterNode = ({ data }: { data: CustomerMeterNodeData }) => {
+  const zoom = useZoomSnapped();
+  const labelInverseScale = inverseZoomScale(zoom);
   return (
     <div
       className="group relative h-3 w-3 flex items-center justify-center rounded-sm border border-zinc-600 bg-zinc-400 shadow-sm"
       title={data.meter.id}
     >
       <Home className="w-2 h-2 text-zinc-800" fill="currentColor" fillOpacity={0.2} />
-      <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-mono text-zinc-700 opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap pointer-events-none z-20">
+      <div
+        className="absolute -bottom-8 left-1/2 rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-mono text-zinc-700 opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap pointer-events-none z-20"
+        style={{ transform: `translateX(-50%) scale(${labelInverseScale})`, transformOrigin: 'center top' }}
+      >
         {data.meter.id}
       </div>
     </div>
@@ -217,6 +244,8 @@ const CustomCustomerMeterNode = ({ data }: { data: CustomerMeterNodeData }) => {
 const CustomValveMarkerNode = ({ data }: { data: ValveMarkerNodeData }) => {
   const dimmed = !!data.dimmed;
   const opacity = dimmed ? 0.25 : 1;
+  const zoom = useZoomSnapped();
+  const labelInverseScale = inverseZoomScale(zoom);
 
   return (
     <div
@@ -225,7 +254,10 @@ const CustomValveMarkerNode = ({ data }: { data: ValveMarkerNodeData }) => {
       title={data.id}
     >
       <span className="text-[9px] leading-none font-bold text-zinc-900">{'><'}</span>
-      <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-mono text-zinc-700 opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap pointer-events-none z-20">
+      <div
+        className="absolute -bottom-7 left-1/2 rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-mono text-zinc-700 opacity-0 transition-opacity group-hover:opacity-100 whitespace-nowrap pointer-events-none z-20"
+        style={{ transform: `translateX(-50%) scale(${labelInverseScale})`, transformOrigin: 'center top' }}
+      >
         {data.id}
       </div>
     </div>
