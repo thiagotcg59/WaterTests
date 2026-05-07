@@ -76,8 +76,6 @@ export default function IfcAssetViewer({ ifcUrl }: Props) {
     dir2.position.set(-40, 30, -30);
     scene.add(dir2);
 
-    scene.add(new THREE.AxesHelper(2));
-
     const animate = () => {
       sceneRef.current.animationId = requestAnimationFrame(animate);
       controls.update();
