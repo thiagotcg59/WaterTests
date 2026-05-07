@@ -6,7 +6,9 @@
     "dev": "next dev -H 127.0.0.1 -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "node scripts/copy-wasm.mjs",
+    "setup:wasm": "node scripts/copy-wasm.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
@@ -25,6 +27,8 @@
     "recharts": "^3.8.1",
     "shp-write": "^0.3.2",
     "tailwind-merge": "^3.5.0",
+    "three": "^0.160.1",
+    "web-ifc": "^0.0.65",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -32,6 +36,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.160.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",

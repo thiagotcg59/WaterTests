@@ -9,6 +9,10 @@ const nextConfig = {
   },
   basePath: isProduction ? repoBasePath : undefined,
   assetPrefix: isProduction ? `${repoBasePath}/` : undefined,
+  // Necessário para o IfcAssetViewer resolver a URL do WASM em GH Pages.
+  env: {
+    NEXT_PUBLIC_BASE_PATH: isProduction ? repoBasePath : '',
+  },
 };
 
 export default nextConfig;

@@ -53,7 +53,8 @@ import { addLink, addNode, deleteLink, deleteNode, networkToInp, updateLinkAttrs
 import TimeSlider from '../components/TimeSlider';
 import { networkToGeoJson } from '../lib/inpToGeoJson';
 import { generateAISectorization } from '../lib/aiSectorization';
-import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2, Droplets } from 'lucide-react';
+import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2, Droplets, Boxes } from 'lucide-react';
+import { hasIfcModel, getAssetIfcRoute } from '../lib/ifc/assetMap';
 import PatternEditor, { DEFAULT_PATTERN } from '../components/PatternEditor';
 import * as turf from '@turf/turf';
 
@@ -3300,6 +3301,13 @@ export default function Home() {
             onClick: () => {
               setSelectedElement(target);
               setGisEditMode('move');
+            },
+          }] : []),
+          ...(isNode && hasIfcModel(target.id) ? [{
+            icon: Boxes,
+            label: 'Abrir modelo IFC',
+            onClick: () => {
+              window.open(getAssetIfcRoute(target.id), '_blank', 'noopener');
             },
           }] : []),
           {
