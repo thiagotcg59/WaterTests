@@ -16,11 +16,20 @@ function decodeBase64Utf8(payload: string): string | null {
   return null;
 }
 
+const VALID_FLOW_UNITS: ReadonlySet<string> = new Set([
+  'CFS', 'GPM', 'MGD', 'IMGD', 'AFD',
+  'LPS', 'LPM', 'MLD', 'CMH', 'CMD',
+]);
+
 export function parseInpFile(fileContent: string): NetworkData {
   const lines = fileContent.split(/\r?\n/);
-  
+
   const nodes: Record<string, NodeElement> = {};
   const links: Record<string, LinkElement> = {};
+  // Lê a opção `Units` da seção [OPTIONS] do INP. Importante para
+  // preservar a interpretação dos números numéricos (Demand, Head, etc.)
+  // ao regenerar o arquivo. Sem isso, demandas em CMH virariam LPS.
+  let flowUnits: NetworkData['flowUnits'] | undefined;
   const sectors: any[] = [];
   const customerMeters: any[] = [];
   const controlLines: string[] = [];
@@ -80,6 +89,15 @@ export function parseInpFile(fileContent: string): NetworkData {
 
     const tokens = line.split(/\s+/);
     if (tokens.length === 0) continue;
+
+    // Captura `Units <FLOW>` na seção [OPTIONS] (case-insensitive).
+    if (currentSection === 'OPTIONS' && tokens.length >= 2 && tokens[0].toUpperCase() === 'UNITS') {
+      const unit = tokens[1].toUpperCase();
+      if (VALID_FLOW_UNITS.has(unit)) {
+        flowUnits = unit as NetworkData['flowUnits'];
+      }
+      continue;
+    }
 
     const id = unquote(tokens[0]);
 
@@ -315,6 +333,7 @@ export function parseInpFile(fileContent: string): NetworkData {
   return {
     nodes,
     links,
+    flowUnits,
     hydraulicControls: finalControls,
     sectors: metadata.sectors ?? sectors,
     customerMeters: metadata.customerMeters ?? customerMeters,

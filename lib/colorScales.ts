@@ -1,8 +1,8 @@
 // Escalas de cores para representação hidráulica.
 // Cores escolhidas para boa leitura em fundos claros e escuros.
 
-export type NodeColorMode = 'type' | 'pressure' | 'elevation';
-export type LinkColorMode = 'type' | 'flow' | 'velocity' | 'diameter';
+export type NodeColorMode = 'type' | 'pressure' | 'elevation' | 'none';
+export type LinkColorMode = 'type' | 'flow' | 'velocity' | 'diameter' | 'none';
 
 export interface ColorRange {
   label: string;

@@ -936,7 +936,7 @@ function summarizeAnalysis(sectors: Sector[]): string {
       return av - bv;
     });
 
-  lines.push('Setorização IA concluída com base em conectividade hidráulica, padrão de pressão e proximidade espacial.');
+  lines.push('Setorização concluída com base em conectividade hidráulica, padrão de pressão e proximidade espacial.');
   lines.push(`Foram criados ${sectors.length} setores com fronteiras ajustadas para evitar sobreposição.`);
 
   sortedByRisk.slice(0, 3).forEach((sector) => {
@@ -1008,7 +1008,7 @@ export function generateAISectorization(data: NetworkData, config: AISectorizati
 
     return {
       id: `ai-setor-${clusterIndex + 1}`,
-      nome: `Setor IA ${clusterIndex + 1}`,
+      nome: `Setor ${clusterIndex + 1}`,
       nodeIds,
       linkIds,
       cor: ['#ef4444', '#22c55e', '#3b82f6', '#a855f7', '#f59e0b', '#06b6d4', '#ec4899', '#14b8a6'][clusterIndex % 8],

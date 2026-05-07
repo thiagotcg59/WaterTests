@@ -7,6 +7,7 @@ import {
   NodeType,
   LinkProperty,
   LinkStatusType,
+  FlowUnits,
 } from 'epanet-js';
 
 interface BaselineSnapshot {
@@ -194,6 +195,7 @@ export async function POST(request: NextRequest) {
 
     try {
       model.open(filename, 'report.rpt', 'output.bin');
+      try { model.setFlowUnits(FlowUnits.LPS); } catch { /* noop */ }
 
       // Baseline
       let baseline: BaselineSnapshot;

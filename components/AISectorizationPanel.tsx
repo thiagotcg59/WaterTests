@@ -89,7 +89,7 @@ export default function AISectorizationPanel({
         <div>
           <div className="flex items-center gap-2 text-blue-300 text-sm font-semibold">
             <Bot className="w-4 h-4" />
-            Setorização Inteligente por IA
+            Setorização Inteligente
           </div>
           <p className="text-[11px] text-zinc-500 mt-1">
             Gere, compare e salve cenários automáticos de DMC.
@@ -118,7 +118,7 @@ export default function AISectorizationPanel({
             className="mt-1 w-full px-2 py-1.5 text-sm rounded bg-zinc-900 border border-zinc-800 text-zinc-100 outline-none focus:border-blue-500"
           />
           <p className="text-[11px] text-zinc-500 mt-2">
-            Setores IA atualmente no mapa: <span className="text-zinc-200 font-semibold">{currentSectorCount}</span>
+            Setores atualmente no mapa: <span className="text-zinc-200 font-semibold">{currentSectorCount}</span>
           </p>
         </section>
 
@@ -152,7 +152,7 @@ export default function AISectorizationPanel({
             }`}
           >
             {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {isProcessing ? 'Processando...' : 'Analisar e Criar Setorização IA'}
+            {isProcessing ? 'Processando...' : 'Analisar e Criar Setorização'}
           </button>
 
           <button
@@ -176,7 +176,7 @@ export default function AISectorizationPanel({
             className="col-span-2 flex items-center justify-center gap-1.5 px-2 py-2 rounded border border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500 text-xs"
           >
             {showPolygons ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            {showPolygons ? 'Ocultar camada Setorização IA' : 'Exibir camada Setorização IA'}
+            {showPolygons ? 'Ocultar camada Setorização' : 'Exibir camada Setorização'}
           </button>
         </section>
 

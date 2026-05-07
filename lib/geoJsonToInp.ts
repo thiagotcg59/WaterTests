@@ -317,7 +317,10 @@ function buildMinimalInp(data: NetworkData): string {
     out.push('');
   }
   out.push('[OPTIONS]');
-  out.push('Units\tLPS');
+  // Preserva a unidade declarada no INP original. Sem isso, valores
+  // numéricos como demanda e carga seriam reinterpretados pelo solver
+  // (ex.: demanda 0.32 em CMH = 0.09 L/s, mas em LPS = 0.32 L/s).
+  out.push(`Units\t${data.flowUnits ?? 'LPS'}`);
   out.push('Headloss\tH-W');
   out.push('');
   out.push('[END]');

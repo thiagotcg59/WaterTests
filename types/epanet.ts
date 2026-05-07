@@ -64,10 +64,20 @@ export interface TimeSeriesData {
   }>;
 }
 
+// Unidades de vazão suportadas pelo EPANET. Determinam também as unidades
+// de diâmetro (US: pol; SI: mm) e comprimento (US: ft; SI: m).
+//   US: CFS, GPM, MGD, IMGD, AFD
+//   SI: LPS, LPM, MLD, CMH, CMD
+export type FlowUnits = 'CFS' | 'GPM' | 'MGD' | 'IMGD' | 'AFD' | 'LPS' | 'LPM' | 'MLD' | 'CMH' | 'CMD';
+
 export interface NetworkData {
   nodes: Record<string, NodeElement>;
   links: Record<string, LinkElement>;
   inpContent?: string;
+  /** Unidade de vazão declarada no INP original. Usada para regenerar
+   *  o INP com a mesma unidade — caso contrário os números numéricos
+   *  (demanda, head, etc.) seriam reinterpretados pelo solver. */
+  flowUnits?: FlowUnits;
   hydraulicControls?: HydraulicControl[];
   sectors?: Sector[];
   customerMeters?: CustomerMeter[];

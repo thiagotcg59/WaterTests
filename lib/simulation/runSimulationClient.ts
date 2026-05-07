@@ -9,6 +9,7 @@ import {
   LinkStatusType,
   TimeParameter,
   InitHydOption,
+  FlowUnits,
 } from 'epanet-js';
 
 export interface NodeResult {
@@ -272,6 +273,10 @@ export async function runSimulationClient(input: RunSimulationInput): Promise<Ru
 
   try {
     model.open(filename, 'report.rpt', 'output.bin');
+
+    // Força LPS — INP com Units=CMH retornaria fluxo em m³/h e quebraria a
+    // suposição "flow é L/s" assumida por todo o dashboard.
+    try { model.setFlowUnits(FlowUnits.LPS); } catch { /* noop */ }
 
     if (durationHours > 0) {
       const durationSecs = durationHours * 3600;

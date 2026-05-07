@@ -14,6 +14,7 @@ import ElementDetailsPanel from '../components/ElementDetailsPanel';
 import CustomerMeterDetailsPanel from '../components/CustomerMeterDetailsPanel';
 import CustomerMetersPanel from '../components/CustomerMetersPanel';
 import EditableElementPanel from '../components/EditableElementPanel';
+import ElementContextMenu, { type ContextMenuItem } from '../components/ElementContextMenu';
 import ResultsTables from '../components/ResultsTables';
 import DiagnosticsTab from '../components/DiagnosticsTab';
 import PressureAnomalyBySectorTab from '../components/PressureAnomalyBySectorTab';
@@ -41,6 +42,7 @@ import { parseInpOptions } from '../lib/simulation/inpOptionsParser';
 import { applyOptionsToInp } from '../lib/simulation/inpOptionsWriter';
 import { interpretEpanetError, type SimulationErrorInfo } from '../lib/simulation/interpretEpanetError';
 import QuickHydraulicModelPanel from '../components/QuickHydraulicModelPanel';
+import BulkEditPanel from '../components/BulkEditPanel';
 import { type HydraulicDraft, isNodeDraft, isLinkDraft, buildNodeFromDraft, buildLinkFromDraft } from '../lib/hydraulicDraft';
 import { runSimulationClient } from '../lib/simulation/runSimulationClient';
 import SimulationErrorsTab from '../components/SimulationErrorsTab';
@@ -148,7 +150,13 @@ function clearSimulationResults(data: NetworkData): NetworkData {
       return [id, rest as LinkElement];
     })
   );
-  return { ...data, nodes, links };
+  // Também descarta a série temporal — sem isso, o painel de propriedades
+  // (que lê o timestep ativo do slider) continua exibindo valores da
+  // simulação anterior mesmo após o usuário editar diâmetro/rugosidade
+  // /comprimento do tubo.
+  const { timeSeries: _ts, ...rest } = data;
+  void _ts;
+  return { ...rest, nodes, links };
 }
 
 function clearNodeResults(node: NodeElement): NodeElement {
@@ -385,10 +393,12 @@ export default function Home() {
   const [showGeoAnchorMenu, setShowGeoAnchorMenu] = useState(false);
   const [showQuickModelPanel, setShowQuickModelPanel] = useState(false);
   const [quickModelInitialKind, setQuickModelInitialKind] = useState<HydraulicDraft['kind'] | undefined>(undefined);
+  const [bulkSelection, setBulkSelection] = useState<{ nodeIds: string[]; linkIds: string[] } | null>(null);
   const [pendingHydraulicDraft, setPendingHydraulicDraft] = useState<HydraulicDraft | null>(null);
   // Último draft confirmado e inserido no mapa. Permite ao usuário
   // repetir a criação com as mesmas propriedades pressionando ESPAÇO.
   const [lastHydraulicDraft, setLastHydraulicDraft] = useState<HydraulicDraft | null>(null);
+  const [elementContextMenu, setElementContextMenu] = useState<{ id: string; kind: 'node' | 'link'; x: number; y: number } | null>(null);
   const [valveInsertType, setValveInsertType] = useState<'PRV' | 'PSV' | 'PBV' | 'FCV' | 'TCV' | 'GPV'>('PRV');
   const [valveInsertSetting, setValveInsertSetting] = useState<number>(10);
   const [valveInsertDiameter, setValveInsertDiameter] = useState<number>(100);
@@ -1665,6 +1675,31 @@ export default function Home() {
     }
   };
 
+  // Recebe IDs selecionados pelo lasso na aba GIS e abre o painel de
+  // edição em massa. setTimeout sai do tick atual do MapLibre.
+  const handleLassoSelect = (nodeIds: string[], linkIds: string[]) => {
+    setTimeout(() => setBulkSelection({ nodeIds, linkIds }), 0);
+  };
+
+  // Aplica o mesmo patch a vários nós/links de uma vez. Cada chamada
+  // produz uma única entrada no histórico de undo (updateNetwork agrega).
+  const handleBulkApplyNodes = (ids: string[], patch: Partial<NodeElement>) => {
+    if (ids.length === 0) return;
+    updateNetwork((d) => {
+      let next = d;
+      for (const id of ids) next = updateNodeAttrs(next, id, patch);
+      return next;
+    });
+  };
+  const handleBulkApplyLinks = (ids: string[], patch: Partial<LinkElement>) => {
+    if (ids.length === 0) return;
+    updateNetwork((d) => {
+      let next = d;
+      for (const id of ids) next = updateLinkAttrs(next, id, patch);
+      return next;
+    });
+  };
+
   const handleSectorCreated = (nodeIds: string[], linkIds: string[], points?: number[][]) => {
     // Usamos setTimeout para sair do ciclo de renderização atual do mapa e evitar erros de setstate
     setTimeout(() => {
@@ -1808,7 +1843,7 @@ export default function Home() {
       );
 
       if (result.sectors.length === 0) {
-        setError('A Setorização IA não encontrou nós válidos para criar polígonos.');
+        setError('A Setorização não encontrou nós válidos para criar polígonos.');
         setAISectorizationAnalysis(result.analysis);
         return;
       }
@@ -1819,7 +1854,7 @@ export default function Home() {
       setSelectedElement(null);
       setAISectorizationAnalysis(result.analysis);
     } catch (err) {
-      setError(`Erro ao processar Setorização IA: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Erro ao processar Setorização: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsAISectorizing(false);
     }
@@ -1828,7 +1863,7 @@ export default function Home() {
   const handleSaveAISectorizationScenario = useCallback(() => {
     const aiSectors = aiSectorsInView;
     if (aiSectors.length === 0) {
-      setError('Gere uma Setorização IA antes de salvar cenário.');
+      setError('Gere uma Setorização antes de salvar cenário.');
       return;
     }
 
@@ -2458,6 +2493,7 @@ export default function Home() {
                           className="cursor-pointer rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-200 outline-none transition-colors hover:border-cyan-500/50 focus:border-cyan-500"
                           title="Cor dos nós"
                         >
+                          <option value="none">∅ Nenhum</option>
                           <option value="pressure">◯ Pressão</option>
                           <option value="elevation">◯ Elevação</option>
                           <option value="type">◯ Tipo</option>
@@ -2468,6 +2504,7 @@ export default function Home() {
                           className="cursor-pointer rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-200 outline-none transition-colors hover:border-cyan-500/50 focus:border-cyan-500"
                           title="Cor dos tubos"
                         >
+                          <option value="none">∅ Nenhum</option>
                           <option value="diameter">━ Diâmetro</option>
                           <option value="flow">━ Vazão</option>
                           <option value="velocity">━ Velocidade</option>
@@ -2700,7 +2737,7 @@ export default function Home() {
                       {(['type', 'pressure', 'elevation'] as NodeColorMode[]).map(m => (
                         <button
                           key={m}
-                          onClick={() => setNodeColorMode(m)}
+                          onClick={() => setNodeColorMode(prev => prev === m ? 'none' : m)}
                           className={`px-2 py-1 rounded border ${nodeColorMode === m ? 'bg-red-500 text-white border-red-500' : 'bg-zinc-950 text-zinc-300 border-zinc-800'}`}
                         >
                           {m === 'type' ? 'Tipo' : m === 'pressure' ? 'Pressão' : 'Elevação'}
@@ -2710,7 +2747,7 @@ export default function Home() {
                       {(['diameter', 'flow', 'velocity'] as LinkColorMode[]).map(m => (
                         <button
                           key={m}
-                          onClick={() => setLinkColorMode(m)}
+                          onClick={() => setLinkColorMode(prev => prev === m ? 'none' : m)}
                           className={`px-2 py-1 rounded border ${linkColorMode === m ? 'bg-red-500 text-white border-red-500' : 'bg-zinc-950 text-zinc-300 border-zinc-800'}`}
                         >
                           {m === 'diameter' ? 'Diâmetro' : m === 'flow' ? 'Vazão' : 'Velocidade'}
@@ -2742,10 +2779,10 @@ export default function Home() {
                             ? 'bg-blue-500/20 text-blue-300 border-blue-500/50'
                             : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:border-zinc-600'
                         }`}
-                        title="Abrir painel de Setorização Inteligente por IA"
+                        title="Abrir painel de Setorização"
                       >
                         <Bot className="w-3.5 h-3.5" />
-                        Criar Setorização IA
+                        Setorização
                       </button>
 
                       <button
@@ -2758,7 +2795,7 @@ export default function Home() {
                         title="Abrir painel rápido para criar elementos do EPANET com formulário"
                       >
                         <Droplets className="w-3.5 h-3.5" />
-                        Modelo Hidráulico
+                        Modelar Sistema
                       </button>
 
                       <div className="flex items-center gap-2 bg-zinc-950/50 border border-zinc-800 p-1.5 rounded-lg px-3">
@@ -2781,8 +2818,12 @@ export default function Home() {
                         onPipeAdded={handlePipeAdded}
                         onPipeConnectedToLink={handlePipeConnectedToLink}
                         onElementDeleted={handleElementDeleted}
+                        onElementContextMenu={(id, kind, clientX, clientY) => {
+                          setElementContextMenu({ id, kind, x: clientX, y: clientY });
+                        }}
                         onSectorCreated={handleSectorCreated}
                         onSectorGeometryUpdated={handleSectorGeometryUpdated}
+                        onLassoSelect={handleLassoSelect}
                         nodeColorMode={nodeColorMode}
                         linkColorMode={linkColorMode}
                         selectedId={selectedElement?.id ?? null}
@@ -2795,8 +2836,8 @@ export default function Home() {
                         selectedSmartSensorId={selectedSmartSensorId}
                         onAddSmartSensor={handleAddSmartSensor}
                         onSmartSensorClick={handleSmartSensorMapClick}
-                        editModeOverride={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft) ? gisEditMode : undefined}
-                        onEditModeChange={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft) ? setGisEditMode : undefined}
+                        editModeOverride={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft || selectedElement) ? gisEditMode : undefined}
+                        onEditModeChange={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft || selectedElement) ? setGisEditMode : undefined}
                         onPipeVertexAdded={handlePipeVertexAdded}
                         onPipeVertexMoved={handlePipeVertexMoved}
                         onPipeVertexDeleted={handlePipeVertexDeleted}
@@ -2841,6 +2882,14 @@ export default function Home() {
                       onClose={() => { setShowQuickModelPanel(false); setQuickModelInitialKind(undefined); }}
                       onCommit={commitHydraulicDraft}
                       initialKind={quickModelInitialKind}
+                    />
+                    <BulkEditPanel
+                      open={!!bulkSelection}
+                      data={networkData}
+                      selection={bulkSelection ?? { nodeIds: [], linkIds: [] }}
+                      onClose={() => setBulkSelection(null)}
+                      onApplyNodes={handleBulkApplyNodes}
+                      onApplyLinks={handleBulkApplyLinks}
                     />
                   </div>
                 )}
@@ -3170,6 +3219,18 @@ export default function Home() {
                   onSaveNode={handleSaveNode}
                   onSaveLink={handleSaveLink}
                   timeSeries={networkData.timeSeries}
+                  selectedTimeIndex={selectedTimeIndex}
+                  onRequestMove={() => {
+                    setGisEditMode('move');
+                  }}
+                  onRequestDelete={() => {
+                    if (!selectedElement) return;
+                    const isNode = ['junction', 'reservoir', 'tank'].includes(selectedElement.type);
+                    const kindLabel = selectedElement.type;
+                    if (window.confirm(`Apagar ${kindLabel} "${selectedElement.id}"?`)) {
+                      handleElementDeleted(selectedElement.id, isNode ? 'node' : 'link');
+                    }
+                  }}
                 />
               )}
 
@@ -3219,6 +3280,50 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {elementContextMenu && networkData && (() => {
+        const ctx = elementContextMenu;
+        const target: NodeElement | LinkElement | undefined = ctx.kind === 'node'
+          ? networkData.nodes[ctx.id]
+          : networkData.links[ctx.id];
+        if (!target) return null;
+        const isNode = ctx.kind === 'node';
+        const items: ContextMenuItem[] = [
+          {
+            icon: SlidersHorizontal,
+            label: 'Editar propriedades',
+            onClick: () => setSelectedElement(target),
+          },
+          ...(isNode ? [{
+            icon: MapPin,
+            label: 'Mover no mapa',
+            onClick: () => {
+              setSelectedElement(target);
+              setGisEditMode('move');
+            },
+          }] : []),
+          {
+            icon: XCircle,
+            label: `Apagar ${target.type}`,
+            destructive: true,
+            onClick: () => {
+              if (window.confirm(`Apagar ${target.type} "${target.id}"?`)) {
+                handleElementDeleted(target.id, ctx.kind);
+              }
+            },
+          },
+        ];
+        return (
+          <ElementContextMenu
+            x={ctx.x}
+            y={ctx.y}
+            title={target.type}
+            subtitle={target.id}
+            items={items}
+            onClose={() => setElementContextMenu(null)}
+          />
+        );
+      })()}
 
       <AssetViewer3D
         asset={viewer3DAsset}

@@ -30,8 +30,16 @@ interface HydraulicMapProps {
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
   onValveInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
   onElementDeleted?: (id: string, kind: 'node' | 'link') => void;
+  /** Disparado em right-click sobre um elemento. Recebe id, kind e
+   *  coordenadas de viewport (clientX/clientY) para posicionar um menu
+   *  flutuante. Quando informado, o menu nativo do browser é suprimido
+   *  apenas se o cursor estiver sobre um elemento. */
+  onElementContextMenu?: (id: string, kind: 'node' | 'link', clientX: number, clientY: number) => void;
   onSectorCreated?: (nodeIds: string[], linkIds: string[], points?: number[][]) => void;
   onSectorGeometryUpdated?: (id: string, geometry: any) => void;
+  // Disparado em modo lassoSelect quando o usuário fecha o polígono.
+  // Recebe IDs de nós e links cuja geometria caiu dentro do desenho.
+  onLassoSelect?: (nodeIds: string[], linkIds: string[]) => void;
   nodeColorMode?: NodeColorMode;
   linkColorMode?: LinkColorMode;
   selectedId?: string | null;
@@ -149,7 +157,7 @@ const PIPE_VERTEX_HIT_RADIUS_PX = 10;
 
 export default function HydraulicMap({
   data, onElementClick,
-  onNodeMoved, onNodeAdded, onNodeAddedGetId, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onSectorCreated, onSectorGeometryUpdated,
+  onNodeMoved, onNodeAdded, onNodeAddedGetId, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onElementContextMenu, onSectorCreated, onSectorGeometryUpdated, onLassoSelect,
   nodeColorMode = 'type', linkColorMode = 'type',
   selectedId, highlightIds, highlightColor, sectors, showSectorPolygons,
   smartSensorRecommendations = [], smartInstalledSensors = [], selectedSmartSensorId = null, onAddSmartSensor, onSmartSensorClick,
@@ -1341,8 +1349,9 @@ export default function HydraulicMap({
         return;
       }
 
-      // Modo desenhar polígono
-      if (editMode === 'drawPolygon') {
+      // Modo desenhar polígono (criar setor) — também adiciona vértice
+      // no modo lassoSelect (seleção em massa), que reaproveita a mesma UX.
+      if (editMode === 'drawPolygon' || editMode === 'lassoSelect') {
         setPolygonPoints(prev => [...prev, [e.lngLat.lng, e.lngLat.lat]]);
         return;
       }
@@ -1384,8 +1393,9 @@ export default function HydraulicMap({
     m.on('click', onClick);
 
     const onDblClick = (e: MapMouseEvent) => {
-      if (editMode === 'drawPolygon') {
+      if (editMode === 'drawPolygon' || editMode === 'lassoSelect') {
         e.preventDefault(); // Impede zoom
+        const isLasso = editMode === 'lassoSelect';
         setPolygonPoints(prev => {
           const newPoints = [...prev, [e.lngLat.lng, e.lngLat.lat]];
           if (newPoints.length >= 3) {
@@ -1401,7 +1411,7 @@ export default function HydraulicMap({
                   }
                 }
               }
-              
+
               const linkIds: string[] = [];
               const nodeIdsSet = new Set(nodeIds);
               for (const [id, link] of Object.entries(data.links)) {
@@ -1409,8 +1419,15 @@ export default function HydraulicMap({
                   linkIds.push(id);
                 }
               }
-              
-              if (nodeIds.length > 0 && onSectorCreated) {
+
+              if (isLasso) {
+                // Modo seleção em massa — apenas reporta IDs ao pai.
+                if (nodeIds.length > 0 || linkIds.length > 0) {
+                  onLassoSelect?.(nodeIds, linkIds);
+                } else {
+                  alert('Nenhum elemento selecionado dentro do polígono.');
+                }
+              } else if (nodeIds.length > 0 && onSectorCreated) {
                 onSectorCreated(nodeIds, linkIds, newPoints);
               } else if (nodeIds.length === 0) {
                 alert('Nenhum nó selecionado.');
@@ -1727,12 +1744,12 @@ export default function HydraulicMap({
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
   useEffect(() => {
     setPendingFirstNode(null);
-    if (editMode !== 'drawPolygon') {
+    if (editMode !== 'drawPolygon' && editMode !== 'lassoSelect') {
       setPolygonPoints([]);
     }
     const m = mapRef.current;
     if (m) {
-      if (editMode === 'drawPolygon') {
+      if (editMode === 'drawPolygon' || editMode === 'lassoSelect') {
         m.doubleClickZoom.disable();
         m.getCanvas().style.cursor = 'crosshair';
       } else {
@@ -1797,6 +1814,58 @@ export default function HydraulicMap({
       canvas.removeEventListener('auxclick', onAuxClick);
     };
   }, [mapReady]);
+
+  // Right-click sobre um elemento: dispara onElementContextMenu com as
+  // coordenadas de viewport (clientX/clientY) — o pai posiciona o menu
+  // flutuante. Se o cursor não estiver sobre um elemento, deixa o menu
+  // nativo do browser aparecer.
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady) return;
+    if (!onElementContextMenu) return;
+
+    const NODE_LAYERS = [LYR_NODES_HIT, LYR_JUNCTIONS, LYR_RESERVOIRS, LYR_TANKS, LYR_VALVE_NODE];
+    const LINK_LAYERS = [LYR_LINKS_HIT, LYR_PIPES, LYR_PUMPS, LYR_VALVES, LYR_SPECIAL];
+    const TOL = 12;
+
+    const onContextMenu = (e: MouseEvent) => {
+      const canvas = m.getCanvas();
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [px - TOL, py - TOL],
+        [px + TOL, py + TOL],
+      ];
+
+      const nodeLayers = NODE_LAYERS.filter((l) => Boolean(m.getLayer(l)));
+      if (nodeLayers.length > 0) {
+        const feats = m.queryRenderedFeatures(bbox, { layers: nodeLayers });
+        const id = feats[0]?.properties?.id;
+        if (typeof id === 'string' && id) {
+          e.preventDefault();
+          onElementContextMenu(id, 'node', e.clientX, e.clientY);
+          return;
+        }
+      }
+
+      const linkLayers = LINK_LAYERS.filter((l) => Boolean(m.getLayer(l)));
+      if (linkLayers.length > 0) {
+        const feats = m.queryRenderedFeatures(bbox, { layers: linkLayers });
+        const id = feats[0]?.properties?.id;
+        if (typeof id === 'string' && id) {
+          e.preventDefault();
+          onElementContextMenu(id, 'link', e.clientX, e.clientY);
+          return;
+        }
+      }
+      // Não há elemento sob o cursor: deixa o menu nativo do browser aparecer.
+    };
+
+    const canvas = m.getCanvas();
+    canvas.addEventListener('contextmenu', onContextMenu);
+    return () => canvas.removeEventListener('contextmenu', onContextMenu);
+  }, [mapReady, onElementContextMenu]);
 
   // Tooltip de proximidade: mostra `ID: <id>` perto do cursor quando ele
   // chega a 12 px de qualquer elemento clicável (nó, link, sensor IA).
@@ -1970,6 +2039,7 @@ function Toolbar({
     <div className="absolute top-3 left-3 flex flex-col gap-2 z-10">
       <div className="flex flex-wrap gap-1 bg-[#ffffff]/95 backdrop-blur-sm border border-[#d4d4d8] rounded-md p-1 shadow-sm">
         <Btn mode="select" icon={MousePointer2} label="Selecionar" />
+        <Btn mode="lassoSelect" icon={LassoSelect} label="Selecionar área" />
         <Btn mode="move" icon={Move} label="Mover nó" />
         <Btn mode="addNode" icon={PlusCircle} label="Novo nó" />
         <Btn mode="addPipe" icon={Spline} label="Novo tubo" />
@@ -1993,6 +2063,23 @@ function Toolbar({
       {editMode === 'addValve' && (
         <div className="text-[11px] bg-cyan-500/15 text-cyan-100 border border-cyan-500/40 rounded-md px-2 py-1">
           Clique próximo a um tubo para dividi-lo e inserir a válvula no ponto exato do clique.
+        </div>
+      )}
+      {editMode === 'lassoSelect' && (
+        <div className="text-[11px] bg-violet-500/15 text-violet-100 border border-violet-500/40 rounded-md px-2 py-1 space-y-1">
+          <div>Clique no mapa para desenhar o polígono. <b>Duplo clique</b> para fechar e selecionar.</div>
+          {polygonPoints.length > 0 && (
+            <div className="font-mono text-[10px] text-violet-200/70">
+              {polygonPoints.length} vértice(s) — mínimo 3 para fechar.
+              <button
+                type="button"
+                onClick={() => setPolygonPoints([])}
+                className="ml-2 underline hover:text-white"
+              >
+                limpar
+              </button>
+            </div>
+          )}
         </div>
       )}
 

@@ -134,7 +134,12 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
     sizeClass = 'w-9 h-9';
   }
 
-  const scale = data.symbolScale || 1;
+  // Compensa o zoom do canvas para o símbolo nunca crescer mais que seu
+  // tamanho base — em redes pequenas o fitView faz zoom alto e, sem isso,
+  // junções/reservatórios/tanques ficavam gigantes em relação à distância
+  // entre nós. Permite encolher (até 30%) para não dominar a viewport.
+  const symbolZoomCompensation = Math.min(1, 1 / Math.max(zoom, 0.3));
+  const scale = (data.symbolScale || 1) * symbolZoomCompensation;
   const style: React.CSSProperties = {
     ...(type === 'junction' ? { backgroundColor: colorOverride || '#111827', borderColor: '#111827', borderWidth: '3px' } : {}),
     ...(colorOverride && type === 'junction' ? { backgroundColor: colorOverride, borderColor: '#111827' } : {}),
@@ -150,7 +155,12 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
       style={{ ...style, opacity }}
       title={data.id}
     >
-      <Handle type="target" position={Position.Top} className="opacity-0 w-1 h-1" />
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!w-1 !h-1 !opacity-0 !border-0 !bg-transparent !pointer-events-none"
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }}
+      />
       {showPressureLabel && (
         <div
           className="absolute -top-9 left-1/2 z-10 rounded-md border border-zinc-300 bg-white/95 px-2 py-1 text-[12px] font-bold text-black shadow-md whitespace-nowrap pointer-events-none"
@@ -162,7 +172,12 @@ const CustomEpanetNode = ({ data }: { data: CustomNodeData }) => {
       {type === 'junction' ? (
         <div className="w-2 h-2 rounded-full bg-white/60 shadow-inner" style={{ boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.2)' }} />
       ) : icon}
-      <Handle type="source" position={Position.Bottom} className="opacity-0 w-1 h-1" />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!w-1 !h-1 !opacity-0 !border-0 !bg-transparent !pointer-events-none"
+        style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }}
+      />
       <div
         className="absolute -bottom-10 left-1/2 text-[10px] font-mono text-zinc-700 bg-white/90 border border-zinc-200 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10 flex flex-col items-center"
         style={{ transform: `translateX(-50%) scale(${labelInverseScale})`, transformOrigin: 'center top' }}
@@ -225,9 +240,11 @@ interface ValveMarkerNodeData {
 const CustomCustomerMeterNode = ({ data }: { data: CustomerMeterNodeData }) => {
   const zoom = useZoomSnapped();
   const labelInverseScale = inverseZoomScale(zoom);
+  const symbolCompensation = Math.min(1, 1 / Math.max(zoom, 0.3));
   return (
     <div
       className="group relative h-3 w-3 flex items-center justify-center rounded-sm border border-zinc-600 bg-zinc-400 shadow-sm"
+      style={{ transform: `scale(${symbolCompensation})`, transformOrigin: 'center' }}
       title={data.meter.id}
     >
       <Home className="w-2 h-2 text-zinc-800" fill="currentColor" fillOpacity={0.2} />
@@ -246,11 +263,17 @@ const CustomValveMarkerNode = ({ data }: { data: ValveMarkerNodeData }) => {
   const opacity = dimmed ? 0.25 : 1;
   const zoom = useZoomSnapped();
   const labelInverseScale = inverseZoomScale(zoom);
+  const symbolCompensation = Math.min(1, 1 / Math.max(zoom, 0.3));
 
   return (
     <div
       className="group relative h-4 w-4 rounded-full border border-zinc-900 bg-white shadow-sm flex items-center justify-center"
-      style={{ opacity, ...(data.highlightColor ? { borderColor: data.highlightColor, boxShadow: `0 0 0 3px ${data.highlightColor}33` } : {}) }}
+      style={{
+        opacity,
+        transform: `scale(${symbolCompensation})`,
+        transformOrigin: 'center',
+        ...(data.highlightColor ? { borderColor: data.highlightColor, boxShadow: `0 0 0 3px ${data.highlightColor}33` } : {}),
+      }}
       title={data.id}
     >
       <span className="text-[9px] leading-none font-bold text-zinc-900">{'><'}</span>
@@ -299,6 +322,10 @@ export default function NetworkViewer({
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
   const [editMode, setEditMode] = useState<'select' | 'drawPolygon'>('select');
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
+  // Zoom do canvas em steps de 0.2 — usado para compensar o tamanho dos
+  // labels dos edges (SVG) que de outra forma escalariam com o viewport
+  // do React Flow. Steps grandes evitam recriar os edges a cada pixel.
+  const [zoomSnapped, setZoomSnapped] = useState(1);
 
   // Escala de vazão precisa varrer todos os links
   const maxAbsFlow = useMemo(() => {
@@ -469,6 +496,9 @@ export default function NetworkViewer({
       const isReverseFlow = typeof l.flow === 'number' && l.flow < 0;
       const hasFlow = showFlowArrows && typeof l.flow === 'number' && Math.abs(l.flow) > 1e-6;
 
+      // Compensa o zoom do canvas: em zoom alto (rede pequena), reduz a
+      // fonte para o label não dominar a viewport. Clampa entre 7px e 13px.
+      const edgeLabelFontSize = Math.max(7, Math.min(13, 13 / Math.max(zoomSnapped, 0.4)));
       edges.push({
         id: l.id,
         source: isReverseFlow ? l.node2 : l.node1,
@@ -476,8 +506,8 @@ export default function NetworkViewer({
         type: 'straight',
         animated: animated || hasFlow,
         label: showLabels ? labelWithResults : '',
-        labelStyle: { fontSize: '13px', fill: '#111827', fontWeight: 700, opacity: finalOpacity },
-        labelBgPadding: [8, 5],
+        labelStyle: { fontSize: `${edgeLabelFontSize}px`, fill: '#111827', fontWeight: 700, opacity: finalOpacity },
+        labelBgPadding: [Math.max(2, edgeLabelFontSize * 0.4), Math.max(1, edgeLabelFontSize * 0.25)],
         labelBgBorderRadius: 6,
         labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95 * finalOpacity },
         style: { stroke: finalColor, strokeWidth: !dimmed && highlightColor ? Math.max(strokeWidth, 3) : strokeWidth, strokeDasharray, opacity: finalOpacity },
@@ -507,7 +537,7 @@ export default function NetworkViewer({
     });
 
     return { initialNodes: nodes, initialEdges: edges, requiresLayout: missingCoords };
-  }, [data, nodeColorMode, linkColorMode, flowColor, highlightIds, highlightColor, customerMeters, showCustomerMeters, nodeAnomalyById, showNodes, showLinks, showReservoirs, showTanks, showPumps, showValves, showLabels, showFlowArrows, baseLineWidth, linkOpacity, symbolScale]);
+  }, [data, nodeColorMode, linkColorMode, flowColor, highlightIds, highlightColor, customerMeters, showCustomerMeters, nodeAnomalyById, showNodes, showLinks, showReservoirs, showTanks, showPumps, showValves, showLabels, showFlowArrows, baseLineWidth, linkOpacity, symbolScale, zoomSnapped]);
 
   const { nodes: layoutedNodes, edges: layoutedEdges } = useMemo(() => {
     if (requiresLayout) {
@@ -621,7 +651,15 @@ export default function NetworkViewer({
         nodes={nodesToRender}
         edges={layoutedEdges}
         nodeTypes={nodeTypes}
-        onInit={setRfInstance}
+        onInit={(inst) => {
+          setRfInstance(inst);
+          const v = inst.getViewport();
+          setZoomSnapped(Math.round(v.zoom * 5) / 5 || 1);
+        }}
+        onMove={(_e, viewport) => {
+          const snapped = Math.round(viewport.zoom * 5) / 5;
+          setZoomSnapped((prev) => (prev === snapped ? prev : snapped));
+        }}
         onNodeClick={editMode === 'select' ? onNodeClick : undefined}
         onEdgeClick={editMode === 'select' ? onEdgeClick : undefined}
         onPaneClick={onPaneClick}
