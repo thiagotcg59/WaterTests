@@ -19,6 +19,8 @@ export function hasIfcModel(id: string): boolean {
 }
 
 export function getAssetIfcRoute(id: string): string {
+  // Sem trailing slash — `output: 'export'` gera `ativo/<id>/ifc.html` e
+  // o GH Pages serve a URL sem barra final. Com a barra dá 404.
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
-  return `${basePath}/ativo/${id}/ifc/`;
+  return `${basePath}/ativo/${id}/ifc`;
 }
