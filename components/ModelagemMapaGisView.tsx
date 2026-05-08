@@ -56,6 +56,9 @@ interface Props {
   onPipeVertexDeleted?: (linkId: string, vertexIndex: number) => void;
   // Anchor geográfico (propagado para o HydraulicMap)
   anchor?: GeoAnchor;
+  // Centro congelado do transform — repassado ao HydraulicMap para evitar
+  // que coordenadas pulem quando o usuário insere nós fora da bbox original.
+  frozenCenter?: { cx: number; cy: number };
 }
 
 export default function ModelagemMapaGisView({
@@ -94,6 +97,7 @@ export default function ModelagemMapaGisView({
   onPipeVertexMoved,
   onPipeVertexDeleted,
   anchor,
+  frozenCenter,
 }: Props) {
 
   // Não usamos `setShowSectorPolygons` aqui (a configuração fica em outras abas).
@@ -132,6 +136,7 @@ export default function ModelagemMapaGisView({
           onPipeVertexMoved={onPipeVertexMoved}
           onPipeVertexDeleted={onPipeVertexDeleted}
           anchor={anchor}
+          frozenCenter={frozenCenter}
         />
 
         {/* Cursor contextual com ícone do tipo de elemento ativo */}

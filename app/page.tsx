@@ -392,6 +392,27 @@ export default function Home() {
   const [simulationError, setSimulationError] = useState<SimulationErrorInfo | null>(null);
   const [geoAnchor, setGeoAnchorState] = useState<GeoAnchor>(DEFAULT_ANCHOR);
   const [showGeoAnchorMenu, setShowGeoAnchorMenu] = useState(false);
+
+  // Centro do transform geográfico — congelado por inpContent + anchor para
+  // não se deslocar quando o usuário insere nós fora da bbox original.
+  // Sem isso, cada nó novo recalculava cx/cy e fazia tudo "pular" no mapa.
+  const geoCenter = useMemo(() => {
+    if (!networkData) return undefined;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const n of Object.values(networkData.nodes)) {
+      if (!n.coordinates) continue;
+      xs.push(n.coordinates.x);
+      ys.push(n.coordinates.y);
+    }
+    if (xs.length === 0) return { cx: 0, cy: 0 };
+    return {
+      cx: (Math.min(...xs) + Math.max(...xs)) / 2,
+      cy: (Math.min(...ys) + Math.max(...ys)) / 2,
+    };
+    // Recomputar SÓ quando o INP base ou anchor mudam — não a cada edição.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [networkData?.inpContent, geoAnchor]);
   const [showQuickModelPanel, setShowQuickModelPanel] = useState(false);
   const [quickModelInitialKind, setQuickModelInitialKind] = useState<HydraulicDraft['kind'] | undefined>(undefined);
   const [bulkSelection, setBulkSelection] = useState<{ nodeIds: string[]; linkIds: string[] } | null>(null);
@@ -742,7 +763,7 @@ export default function Home() {
     // dos nós (em metros, via haversine), respeitando a escala do mapa GIS
     // independentemente do sistema de coordenadas do INP (lat/lng, UTM ou
     // metros locais). Inclui os vértices intermediários da polilinha.
-    const transform = networkToGeoJson(data, geoAnchor).transform;
+    const transform = networkToGeoJson(data, geoAnchor, { frozenCenter: geoCenter }).transform;
     const EARTH_RADIUS = 6378137;
     const toRad = (d: number) => (d * Math.PI) / 180;
     const segmentMeters = (a: [number, number], b: [number, number]): number => {
@@ -1130,13 +1151,13 @@ export default function Home() {
 
   const handleNodeMoved = (id: string, lng: number, lat: number) => {
     if (!networkData) return;
-    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
     updateNetwork(data => updateNodeCoordinates(data, id, x, y));
   };
 
   const handleNodeAdded = (lng: number, lat: number) => {
     if (!networkData) return;
-    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
 
     // Caminho rápido: se há um draft pendente do painel de Modelagem
     // Hidráulica e ele é de nó, criamos o elemento com TODAS as
@@ -1214,7 +1235,7 @@ export default function Home() {
   // [VERTICES] do INP exportado.
   const handlePipeVertexAdded = (linkId: string, lng: number, lat: number) => {
     if (!networkData) return;
-    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
     updateNetwork((data) => {
       const link = data.links[linkId];
       if (!link || link.type !== 'pipe') return data;
@@ -1260,7 +1281,7 @@ export default function Home() {
 
   const handlePipeVertexMoved = (linkId: string, vertexIndex: number, lng: number, lat: number) => {
     if (!networkData) return;
-    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
     updateNetwork((data) => {
       const link = data.links[linkId];
       if (!link || !Array.isArray(link.vertices)) return data;
@@ -1311,7 +1332,7 @@ export default function Home() {
   // Usado pelo modo addPipe para criar automaticamente o nó de destino.
   const handleNodeAddedGetId = (lng: number, lat: number): string => {
     if (!networkData) return '';
-    const [x, y] = networkToGeoJson(networkData, geoAnchor).transform.toEpanet(lng, lat);
+    const [x, y] = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
     const id = nextId('J', networkData.nodes);
     updateNetwork(data => addNode(data, { id, type: 'junction', elevation: 0, demand: 0, coordinates: { x, y } }));
     return id;
@@ -1413,7 +1434,7 @@ export default function Home() {
       const node2 = data.nodes[link.node2];
       if (!node1?.coordinates || !node2?.coordinates) return data;
 
-      const [x, y] = networkToGeoJson(data, geoAnchor).transform.toEpanet(lng, lat);
+      const [x, y] = networkToGeoJson(data, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
       const ax = node1.coordinates.x;
       const ay = node1.coordinates.y;
       const bx = node2.coordinates.x;
@@ -1529,7 +1550,7 @@ export default function Home() {
       const node2 = data.nodes[link.node2];
       if (!node1?.coordinates || !node2?.coordinates) return data;
 
-      const [x, y] = networkToGeoJson(data, geoAnchor).transform.toEpanet(lng, lat);
+      const [x, y] = networkToGeoJson(data, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
       const ax = node1.coordinates.x;
       const ay = node1.coordinates.y;
       const bx = node2.coordinates.x;
@@ -1776,7 +1797,7 @@ export default function Home() {
 
   const handleSectorGeometryUpdated = (id: string, geometry: any) => {
     if (!networkData) return;
-    const { transform } = networkToGeoJson(networkData, geoAnchor);
+    const { transform } = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter });
     
     try {
       const nodeIds: string[] = [];
@@ -2023,7 +2044,7 @@ export default function Home() {
     }
     try {
       const shpwrite = await import('shp-write');
-      const { transform } = networkToGeoJson(networkData, geoAnchor);
+      const { transform } = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter });
       const features = customerMeters.map(m => {
         const [lng, lat] = transform.toLngLat(m.x, m.y);
         return {
@@ -2839,6 +2860,7 @@ export default function Home() {
                         onSmartSensorClick={handleSmartSensorMapClick}
                         editModeOverride={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft || selectedElement) ? gisEditMode : undefined}
                         onEditModeChange={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft || selectedElement) ? setGisEditMode : undefined}
+                        frozenCenter={geoCenter}
                         onPipeVertexAdded={handlePipeVertexAdded}
                         onPipeVertexMoved={handlePipeVertexMoved}
                         onPipeVertexDeleted={handlePipeVertexDeleted}
@@ -3025,6 +3047,7 @@ export default function Home() {
                           onPipeVertexMoved={handlePipeVertexMoved}
                           onPipeVertexDeleted={handlePipeVertexDeleted}
                           anchor={geoAnchor}
+                          frozenCenter={geoCenter}
                         />
                       )}
 

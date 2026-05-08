@@ -74,6 +74,10 @@ interface HydraulicMapProps {
   // Quando o INP já traz lat/lng ou UTM Sul brasileiro, esse parâmetro é
   // ignorado.
   anchor?: GeoAnchor;
+  // Centro congelado do transform (para sistemas em metros locais). Sem
+  // isso, ao adicionar um nó fora da bbox o cx/cy se desloca e todos os
+  // elementos pulam de lugar no mapa.
+  frozenCenter?: { cx: number; cy: number };
 }
 
 // IDs de fontes/camadas no MapLibre
@@ -164,7 +168,7 @@ export default function HydraulicMap({
   hideDefaultLegend = false, legendOverlay,
   editModeOverride, onEditModeChange,
   activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexMoved, onPipeVertexDeleted,
-  anchor,
+  anchor, frozenCenter,
 }: HydraulicMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -189,7 +193,10 @@ export default function HydraulicMap({
   const draggingPipeVertexRef = useRef<{ linkId: string; vertexIndex: number } | null>(null);
   const sectorGeoJsonRef = useRef<GeoJSON.FeatureCollection>({ type: 'FeatureCollection', features: [] });
 
-  const geo: NetworkGeoJson = useMemo(() => networkToGeoJson(data, anchor), [data, anchor]);
+  const geo: NetworkGeoJson = useMemo(
+    () => networkToGeoJson(data, anchor, { frozenCenter }),
+    [data, anchor, frozenCenter],
+  );
 
   const smartSensorsGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
     const recommendedFeatures: GeoJSON.Feature[] = smartSensorRecommendations.map((sensor) => {

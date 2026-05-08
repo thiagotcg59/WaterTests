@@ -150,10 +150,14 @@ function resolveNodeCoordinates(data: NetworkData): Record<string, { x: number; 
   return coords;
 }
 
-export function networkToGeoJson(data: NetworkData, anchor?: GeoAnchor): NetworkGeoJson {
+export function networkToGeoJson(
+  data: NetworkData,
+  anchor?: GeoAnchor,
+  options?: { frozenCenter?: { cx: number; cy: number } },
+): NetworkGeoJson {
   const coords = resolveNodeCoordinates(data);
   const points = Object.values(coords).map(({ x, y }) => ({ x, y }));
-  const transform = buildGeoTransform(points, anchor);
+  const transform = buildGeoTransform(points, anchor, options);
 
   const nodeFeatures: Feature<Point, NodeFeatureProps>[] = [];
   let west = Infinity;

@@ -170,6 +170,16 @@ function inferUtmZoneFromAnchor(anchor: GeoAnchor): number {
   return utmZoneFromLng(anchor.lng);
 }
 
+export interface BuildGeoTransformOptions {
+  /**
+   * Sobrescreve o centro (cx, cy) calculado da bbox dos pontos. Use isso
+   * para CONGELAR o transform durante edições — sem isso, ao adicionar um
+   * nó fora da bbox a referência se desloca e todos os elementos pulam de
+   * lugar no mapa.
+   */
+  frozenCenter?: { cx: number; cy: number };
+}
+
 /**
  * Constrói um transform a partir das coordenadas presentes em um conjunto
  * de pontos EPANET. Se nenhum ponto for fornecido, recai para um transform
@@ -177,7 +187,8 @@ function inferUtmZoneFromAnchor(anchor: GeoAnchor): number {
  */
 export function buildGeoTransform(
   points: Array<{ x: number; y: number }>,
-  anchor: GeoAnchor = DEFAULT_ANCHOR
+  anchor: GeoAnchor = DEFAULT_ANCHOR,
+  options?: BuildGeoTransformOptions,
 ): GeoTransform {
   const xs = points.map(p => p.x);
   const ys = points.map(p => p.y);
@@ -204,8 +215,10 @@ export function buildGeoTransform(
   }
 
   // Sistema local arbitrário em metros: ancora no anchor.
-  const cx = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
-  const cy = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+  const cx = options?.frozenCenter?.cx
+    ?? (xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0);
+  const cy = options?.frozenCenter?.cy
+    ?? (ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0);
 
   const latRad = (anchor.lat * Math.PI) / 180;
   const metersPerDegLat = (Math.PI * EARTH_RADIUS) / 180;
