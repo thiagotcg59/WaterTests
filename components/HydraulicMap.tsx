@@ -5,7 +5,7 @@
 import { useEffect, useRef, useMemo, useCallback, useState } from 'react';
 import maplibregl, { Map as MLMap, MapMouseEvent, MapGeoJSONFeature } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { NetworkData, NodeElement, LinkElement, Sector, SmartInstalledSensor, SmartSensorRecommendation } from '../types/epanet';
+import { NetworkData, NodeElement, LinkElement, Sector, SmartInstalledSensor, SmartSensorRecommendation, CustomerMeter } from '../types/epanet';
 import { networkToGeoJson, NetworkGeoJson } from '../lib/inpToGeoJson';
 import { GeoAnchor } from '../lib/geoTransform';
 import {
@@ -78,6 +78,15 @@ interface HydraulicMapProps {
   // isso, ao adicionar um nó fora da bbox o cx/cy se desloca e todos os
   // elementos pulam de lugar no mapa.
   frozenCenter?: { cx: number; cy: number };
+  // Identificador estável do modelo. Auto-fit do mapa só dispara quando
+  // este valor muda (carga de novo INP). Edições incrementais preservam
+  // o zoom/pan atual.
+  refitKey?: number | string;
+  // Medidores domiciliares (customer meters). Renderizados como pontos
+  // laranjas com uma linha tracejada ligando ao ponto de derivação no tubo.
+  customerMeters?: CustomerMeter[];
+  showCustomerMeters?: boolean;
+  onCustomerMeterClick?: (meter: CustomerMeter) => void;
 }
 
 // IDs de fontes/camadas no MapLibre
@@ -86,6 +95,8 @@ const SRC_LINKS = 'epanet-links';
 const SRC_SPECIAL = 'epanet-special-links';
 const SRC_SECTORS = 'epanet-sectors';
 const SRC_SMART_SENSORS = 'epanet-smart-sensors';
+const SRC_CUSTOMER_METERS = 'epanet-customer-meters';
+const SRC_CUSTOMER_METER_BRANCHES = 'epanet-customer-meter-branches';
 
 const LYR_PIPES = 'lyr-pipes';
 const LYR_PUMPS = 'lyr-pumps';
@@ -103,6 +114,8 @@ const LYR_VALVE_NODE = 'lyr-valve-node';
 const LYR_SELECTED = 'lyr-selected-halo';
 const LYR_SMART_SENSORS = 'lyr-smart-sensors';
 const LYR_SMART_SENSOR_SYMBOLS = 'lyr-smart-sensor-symbols';
+const LYR_CUSTOMER_METER_BRANCHES = 'lyr-customer-meter-branches';
+const LYR_CUSTOMER_METERS = 'lyr-customer-meters';
 
 const LYR_LINKS_HIT = 'lyr-links-hit';  // camada invisível de hit-area para tubos/bombas/válvulas
 const LYR_NODES_HIT = 'lyr-nodes-hit';  // camada invisível de hit-area para nós
@@ -168,7 +181,8 @@ export default function HydraulicMap({
   hideDefaultLegend = false, legendOverlay,
   editModeOverride, onEditModeChange,
   activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexMoved, onPipeVertexDeleted,
-  anchor, frozenCenter,
+  anchor, frozenCenter, refitKey,
+  customerMeters = [], showCustomerMeters = true, onCustomerMeterClick,
 }: HydraulicMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -230,6 +244,45 @@ export default function HydraulicMap({
       features: [...recommendedFeatures, ...installedFeatures],
     };
   }, [smartSensorRecommendations, smartInstalledSensors, geo.transform]);
+
+  // GeoJSON dos medidores: cada medidor vira um Point laranja, com uma
+  // LineString tracejada ligando o ponto de derivação no tubo (touchX/Y)
+  // ao medidor (x/y). Ambos passam pelo mesmo geo.transform que os nós.
+  const customerMetersPointsGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    const features: GeoJSON.Feature[] = [];
+    for (const meter of customerMeters) {
+      if (!meter.ativo) continue;
+      const [lng, lat] = geo.transform.toLngLat(meter.x, meter.y);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [lng, lat] },
+        properties: {
+          id: meter.id,
+          setorId: meter.setorId ?? null,
+          pipeId: meter.pipeId ?? null,
+          nodeIdAssociado: meter.nodeIdAssociado ?? null,
+          volumeMensalM3: meter.volumeMensalM3 ?? 0,
+        },
+      });
+    }
+    return { type: 'FeatureCollection', features };
+  }, [customerMeters, geo.transform]);
+
+  const customerMeterBranchesGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    const features: GeoJSON.Feature[] = [];
+    for (const meter of customerMeters) {
+      if (!meter.ativo) continue;
+      if (meter.touchX == null || meter.touchY == null) continue;
+      const [tLng, tLat] = geo.transform.toLngLat(meter.touchX, meter.touchY);
+      const [mLng, mLat] = geo.transform.toLngLat(meter.x, meter.y);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[tLng, tLat], [mLng, mLat]] },
+        properties: { id: meter.id },
+      });
+    }
+    return { type: 'FeatureCollection', features };
+  }, [customerMeters, geo.transform]);
 
   const smartSensorColorExpr = useMemo(() => (
     [
@@ -448,47 +501,31 @@ export default function HydraulicMap({
     const ss = m.getSource(SRC_SPECIAL) as maplibregl.GeoJSONSource | undefined;
     const smartSource = m.getSource(SRC_SMART_SENSORS) as maplibregl.GeoJSONSource | undefined;
     const verticesSource = m.getSource(SRC_PIPE_VERTICES) as maplibregl.GeoJSONSource | undefined;
+    const meterSource = m.getSource(SRC_CUSTOMER_METERS) as maplibregl.GeoJSONSource | undefined;
+    const meterBranchSource = m.getSource(SRC_CUSTOMER_METER_BRANCHES) as maplibregl.GeoJSONSource | undefined;
     ns?.setData(geo.nodes);
     ls?.setData(geo.links);
     ss?.setData(geo.specialLinks);
     smartSource?.setData(smartSensorsGeoJson);
     verticesSource?.setData(geo.pipeVertices);
-  }, [geo, smartSensorsGeoJson, mapReady]);
+    meterSource?.setData(customerMetersPointsGeoJson);
+    meterBranchSource?.setData(customerMeterBranchesGeoJson);
+  }, [geo, smartSensorsGeoJson, customerMetersPointsGeoJson, customerMeterBranchesGeoJson, mapReady]);
 
-  // Enquadra a rede no carregamento inicial e em trocas de modelo (mudança
-  // grande no centro). Edições incrementais — adicionar/mover nó — não
-  // disparam refit, mantendo o zoom/pan que o usuário escolheu.
-  const lastFitBoundsRef = useRef<[number, number, number, number] | null>(null);
+  // Auto-fit só dispara em troca de modelo (refitKey muda). Edições
+  // incrementais — adicionar/mover/excluir nó — preservam zoom e pan.
+  const lastRefitKeyRef = useRef<number | string | undefined>(undefined);
   useEffect(() => {
     const m = mapRef.current;
     if (!m || !mapReady || !geo.bounds) return;
+    if (refitKey === lastRefitKeyRef.current) return;
+    lastRefitKeyRef.current = refitKey;
 
-    const curr = geo.bounds;
-    const prev = lastFitBoundsRef.current;
-    let shouldFit = false;
-
-    if (!prev) {
-      shouldFit = true;
-    } else {
-      const prevCx = (prev[0] + prev[2]) / 2;
-      const prevCy = (prev[1] + prev[3]) / 2;
-      const currCx = (curr[0] + curr[2]) / 2;
-      const currCy = (curr[1] + curr[3]) / 2;
-      const prevW = Math.max(Math.abs(prev[2] - prev[0]), 1e-6);
-      const prevH = Math.max(Math.abs(prev[3] - prev[1]), 1e-6);
-      const dx = Math.abs(currCx - prevCx);
-      const dy = Math.abs(currCy - prevCy);
-      if (dx > prevW * 0.5 || dy > prevH * 0.5) shouldFit = true;
-    }
-
-    lastFitBoundsRef.current = curr;
-    if (!shouldFit) return;
-
-    let [w, s, e, n] = curr;
+    let [w, s, e, n] = geo.bounds;
     if (w === e) { w -= 0.01; e += 0.01; }
     if (s === n) { s -= 0.01; n += 0.01; }
     m.fitBounds([w, s, e, n], { padding: 140, animate: false, maxZoom: 13 });
-  }, [geo.bounds, mapReady]);
+  }, [geo.bounds, mapReady, refitKey]);
 
   // Atualiza estilo (cor por pressão/velocidade) ao mudar modos
   useEffect(() => {
@@ -496,6 +533,15 @@ export default function HydraulicMap({
     if (!m || !mapReady) return;
     applyPaintStyles(m);
   }, [nodeColorMode, linkColorMode, mapReady]);
+
+  // Alterna visibilidade dos medidores quando o toggle muda.
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady) return;
+    const vis = showCustomerMeters ? 'visible' : 'none';
+    if (m.getLayer(LYR_CUSTOMER_METERS)) m.setLayoutProperty(LYR_CUSTOMER_METERS, 'visibility', vis);
+    if (m.getLayer(LYR_CUSTOMER_METER_BRANCHES)) m.setLayoutProperty(LYR_CUSTOMER_METER_BRANCHES, 'visibility', vis);
+  }, [showCustomerMeters, mapReady]);
 
   // Atualiza visibilidade das camadas
   useEffect(() => {
@@ -661,6 +707,12 @@ export default function HydraulicMap({
     }
     if (!m.getSource(SRC_SMART_SENSORS)) {
       m.addSource(SRC_SMART_SENSORS, { type: 'geojson', data: smartSensorsGeoJson });
+    }
+    if (!m.getSource(SRC_CUSTOMER_METER_BRANCHES)) {
+      m.addSource(SRC_CUSTOMER_METER_BRANCHES, { type: 'geojson', data: customerMeterBranchesGeoJson });
+    }
+    if (!m.getSource(SRC_CUSTOMER_METERS)) {
+      m.addSource(SRC_CUSTOMER_METERS, { type: 'geojson', data: customerMetersPointsGeoJson });
     }
     if (!m.getSource(SRC_PIPE_VERTICES)) {
       m.addSource(SRC_PIPE_VERTICES, { type: 'geojson', data: geo.pipeVertices });
@@ -911,6 +963,41 @@ export default function HydraulicMap({
           'circle-stroke-color': '#475569',
           'circle-stroke-width': 1.2,
           'circle-opacity': 0.95,
+        },
+      });
+    }
+    if (!m.getLayer(LYR_CUSTOMER_METER_BRANCHES)) {
+      m.addLayer({
+        id: LYR_CUSTOMER_METER_BRANCHES,
+        type: 'line',
+        source: SRC_CUSTOMER_METER_BRANCHES,
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+          'visibility': showCustomerMeters ? 'visible' : 'none',
+        },
+        paint: {
+          'line-color': '#d97706',
+          'line-width': 1.5,
+          'line-opacity': 0.55,
+          'line-dasharray': [3, 2],
+        },
+      });
+    }
+    if (!m.getLayer(LYR_CUSTOMER_METERS)) {
+      m.addLayer({
+        id: LYR_CUSTOMER_METERS,
+        type: 'circle',
+        source: SRC_CUSTOMER_METERS,
+        layout: {
+          'visibility': showCustomerMeters ? 'visible' : 'none',
+        },
+        paint: {
+          'circle-radius': 4,
+          'circle-color': '#f59e0b',
+          'circle-opacity': 0.85,
+          'circle-stroke-color': '#7c2d12',
+          'circle-stroke-width': 1,
         },
       });
     }

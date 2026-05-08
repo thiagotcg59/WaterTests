@@ -4,7 +4,7 @@ import { useRef } from 'react';
 import HydraulicMap from './HydraulicMap';
 import GisModelagemPanel, { ActiveNodeKind, ValveTypeOption } from './GisModelagemPanel';
 import MapCursorOverlay from './MapCursorOverlay';
-import { LinkElement, NetworkData, NodeElement, Sector } from '../types/epanet';
+import { CustomerMeter, LinkElement, NetworkData, NodeElement, Sector } from '../types/epanet';
 import { LinkColorMode, NodeColorMode } from '../lib/colorScales';
 import { EditMode } from '../lib/useMapState';
 import { GeoAnchor } from '../lib/geoTransform';
@@ -59,6 +59,9 @@ interface Props {
   // Centro congelado do transform — repassado ao HydraulicMap para evitar
   // que coordenadas pulem quando o usuário insere nós fora da bbox original.
   frozenCenter?: { cx: number; cy: number };
+  refitKey?: number | string;
+  customerMeters?: CustomerMeter[];
+  showCustomerMeters?: boolean;
 }
 
 export default function ModelagemMapaGisView({
@@ -98,6 +101,9 @@ export default function ModelagemMapaGisView({
   onPipeVertexDeleted,
   anchor,
   frozenCenter,
+  refitKey,
+  customerMeters,
+  showCustomerMeters,
 }: Props) {
 
   // Não usamos `setShowSectorPolygons` aqui (a configuração fica em outras abas).
@@ -137,6 +143,9 @@ export default function ModelagemMapaGisView({
           onPipeVertexDeleted={onPipeVertexDeleted}
           anchor={anchor}
           frozenCenter={frozenCenter}
+          refitKey={refitKey}
+          customerMeters={customerMeters}
+          showCustomerMeters={showCustomerMeters}
         />
 
         {/* Cursor contextual com ícone do tipo de elemento ativo */}

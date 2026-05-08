@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { Search, ChevronUp, ChevronDown, ChevronsUpDown, Pencil } from 'lucide-react';
+import { Search, ChevronUp, ChevronDown, ChevronsUpDown, Pencil, Trash2 } from 'lucide-react';
 import { NetworkData, NodeElement, LinkElement, CustomerMeter } from '../types/epanet';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,6 +30,7 @@ interface Props {
   onSaveNode: (id: string, patch: Partial<NodeElement>) => void;
   onSaveLink: (id: string, patch: Partial<LinkElement>) => void;
   onSaveCustomerMeter?: (id: string, patch: Partial<CustomerMeter>) => void;
+  onDeleteAllCustomerMeters?: () => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -471,7 +472,7 @@ function TypedTable({
 // Main component
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function ModelagemParametrosTab({ data, onSaveNode, onSaveLink, onSaveCustomerMeter }: Props) {
+export default function ModelagemParametrosTab({ data, onSaveNode, onSaveLink, onSaveCustomerMeter, onDeleteAllCustomerMeters }: Props) {
   const [filter, setFilter] = useState<ElementKind>('pipe');
   const [search, setSearch] = useState('');
   const [sortField, setSortField] = useState<string | null>(null);
@@ -584,6 +585,16 @@ export default function ModelagemParametrosTab({ data, onSaveNode, onSaveLink, o
       {filter !== 'all' && (
         <div className="flex items-center gap-2 text-[11px] text-zinc-400 dark:text-zinc-500 flex-shrink-0">
           <span className="text-cyan-500">✎</span> Colunas editáveis — clique em qualquer célula marcada para alterar o valor. Confirme com Enter ou clicando fora.
+          {filter === 'meter' && onDeleteAllCustomerMeters && (counts.meter ?? 0) > 0 && (
+            <button
+              onClick={onDeleteAllCustomerMeters}
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-300 hover:bg-red-500/20 hover:border-red-500/60 transition-colors"
+              title="Apaga todos os medidores e reverte as demandas dos nós para os valores base"
+            >
+              <Trash2 className="w-3 h-3" />
+              Apagar todos os medidores
+            </button>
+          )}
         </div>
       )}
 

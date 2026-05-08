@@ -43,6 +43,7 @@ export function parseInpFile(fileContent: string): NetworkData {
     telemetrySensors?: any[];
     telemetryReadings?: Record<string, any[]>;
     linkExtras?: Record<string, Partial<LinkElement>>;
+    geoTransform?: NetworkData['geoTransform'];
   } = {};
 
   const cleanLine = (line: string) => {
@@ -73,6 +74,22 @@ export function parseInpFile(fileContent: string): NetworkData {
         }
         if (key === 'LINK_EXTRAS' && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           metadata.linkExtras = parsed as Record<string, Partial<LinkElement>>;
+        }
+        if (key === 'GEO_TRANSFORM' && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const obj = parsed as { mode?: string; anchor?: { lat?: unknown; lng?: unknown; label?: unknown }; frozenCenter?: { cx?: unknown; cy?: unknown } };
+          const out: NonNullable<NetworkData['geoTransform']> = {};
+          if (obj.mode === 'wgs84' || obj.mode === 'utm-south' || obj.mode === 'local-meters') out.mode = obj.mode;
+          if (obj.anchor && typeof obj.anchor.lat === 'number' && typeof obj.anchor.lng === 'number') {
+            out.anchor = {
+              lat: obj.anchor.lat,
+              lng: obj.anchor.lng,
+              label: typeof obj.anchor.label === 'string' ? obj.anchor.label : undefined,
+            };
+          }
+          if (obj.frozenCenter && typeof obj.frozenCenter.cx === 'number' && typeof obj.frozenCenter.cy === 'number') {
+            out.frozenCenter = { cx: obj.frozenCenter.cx, cy: obj.frozenCenter.cy };
+          }
+          metadata.geoTransform = out;
         }
       } catch {
         // ignore malformed metadata line
@@ -340,6 +357,7 @@ export function parseInpFile(fileContent: string): NetworkData {
     smartSensors: metadata.smartSensors ?? [],
     telemetrySensors: metadata.telemetrySensors ?? [],
     telemetryReadings: metadata.telemetryReadings ?? {},
+    geoTransform: metadata.geoTransform,
     inpContent: fileContent,
     summary: {
       totalNodes: Object.keys(nodes).length,

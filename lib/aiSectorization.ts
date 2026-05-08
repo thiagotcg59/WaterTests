@@ -1,5 +1,5 @@
 import * as turf from '@turf/turf';
-import { buildGeoTransform } from './geoTransform';
+import { buildGeoTransform, GeoAnchor } from './geoTransform';
 import { AISectorizationConfig, LinkElement, NetworkData, Sector } from '../types/epanet';
 
 interface JunctionSample {
@@ -952,7 +952,11 @@ function summarizeAnalysis(sectors: Sector[]): string {
   return lines.join('\n');
 }
 
-export function generateAISectorization(data: NetworkData, config: AISectorizationConfig): { sectors: Sector[]; analysis: string } {
+export function generateAISectorization(
+  data: NetworkData,
+  config: AISectorizationConfig,
+  options?: { anchor?: GeoAnchor; frozenCenter?: { cx: number; cy: number } },
+): { sectors: Sector[]; analysis: string } {
   const samples = deriveJunctionSamples(data);
   if (samples.length === 0) return { sectors: [], analysis: 'Não há junctions com coordenadas para setorização automática.' };
 
@@ -964,7 +968,12 @@ export function generateAISectorization(data: NetworkData, config: AISectorizati
   const coords = Object.values(data.nodes)
     .filter((node) => !!node.coordinates)
     .map((node) => ({ x: node.coordinates!.x, y: node.coordinates!.y }));
-  const transform = buildGeoTransform(coords);
+  // Usa o mesmo anchor + frozenCenter do mapa principal — sem isso, os
+  // polígonos do setor caem em coordenadas WGS84 diferentes das dos nós
+  // e o setor aparece em outro ponto do mapa.
+  const transform = buildGeoTransform(coords, options?.anchor, {
+    frozenCenter: options?.frozenCenter,
+  });
   const partitionPolygons = buildPartitionPolygons(data, samples, labels, uniqueClusters, transform);
 
   const sectors: Sector[] = uniqueClusters.map((clusterId, clusterIndex) => {

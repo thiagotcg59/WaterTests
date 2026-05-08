@@ -106,21 +106,46 @@ function KpiCard({
   icon: React.ComponentType<{ className?: string }>;
   trend?: 'up' | 'down' | 'neutral';
 }) {
-  const bg = { emerald: 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30', red: 'border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30', amber: 'border-amber-200 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30', orange: 'border-orange-200 dark:border-orange-800 bg-orange-50/60 dark:bg-orange-950/30', cyan: 'border-cyan-200 dark:border-cyan-800 bg-cyan-50/60 dark:bg-cyan-950/30', violet: 'border-violet-200 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-950/30', zinc: 'border-zinc-200 dark:border-zinc-700 bg-zinc-50/60 dark:bg-zinc-900/50' }[color];
-  const ic = { emerald: 'text-emerald-600 dark:text-emerald-400', red: 'text-red-600 dark:text-red-400', amber: 'text-amber-600 dark:text-amber-400', orange: 'text-orange-600 dark:text-orange-400', cyan: 'text-cyan-600 dark:text-cyan-400', violet: 'text-violet-600 dark:text-violet-400', zinc: 'text-zinc-500 dark:text-zinc-400' }[color];
+  // Tokens por cor: borda esquerda (faixa colorida), fundo do chip do ícone,
+  // cor do ícone, e cor da faixa. Optamos por fundos sólidos com leve tinta
+  // em vez de /30 de opacidade — assim o card aparece nítido em qualquer
+  // backdrop (incluindo dark mode com dimming aplicado por wrappers acima).
+  const tokens = {
+    emerald: { stripe: 'bg-emerald-500', chipBg: 'bg-emerald-100 dark:bg-emerald-500/15', chipText: 'text-emerald-700 dark:text-emerald-300', dot: 'bg-emerald-500' },
+    red:     { stripe: 'bg-red-500',     chipBg: 'bg-red-100 dark:bg-red-500/15',         chipText: 'text-red-700 dark:text-red-300',         dot: 'bg-red-500' },
+    amber:   { stripe: 'bg-amber-500',   chipBg: 'bg-amber-100 dark:bg-amber-500/15',     chipText: 'text-amber-700 dark:text-amber-300',     dot: 'bg-amber-500' },
+    orange:  { stripe: 'bg-orange-500',  chipBg: 'bg-orange-100 dark:bg-orange-500/15',   chipText: 'text-orange-700 dark:text-orange-300',   dot: 'bg-orange-500' },
+    cyan:    { stripe: 'bg-cyan-500',    chipBg: 'bg-cyan-100 dark:bg-cyan-500/15',       chipText: 'text-cyan-700 dark:text-cyan-300',       dot: 'bg-cyan-500' },
+    violet:  { stripe: 'bg-violet-500',  chipBg: 'bg-violet-100 dark:bg-violet-500/15',   chipText: 'text-violet-700 dark:text-violet-300',   dot: 'bg-violet-500' },
+    zinc:    { stripe: 'bg-zinc-400',    chipBg: 'bg-zinc-100 dark:bg-zinc-700',          chipText: 'text-zinc-600 dark:text-zinc-300',       dot: 'bg-zinc-400' },
+  }[color];
+
   return (
-    <div className={`rounded-xl border p-3 flex flex-col gap-1.5 ${bg}`}>
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-wider font-bold text-zinc-500 dark:text-zinc-400">{label}</span>
-        <Icon className={`w-3.5 h-3.5 ${ic}`} />
+    <div className="relative overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-sm hover:shadow-md hover:border-zinc-300 dark:hover:border-zinc-600 transition-all">
+      {/* Faixa lateral colorida — torna o card identificável de relance */}
+      <span className={`absolute left-0 top-0 bottom-0 w-1 ${tokens.stripe}`} aria-hidden />
+      <div className="p-3 pl-4 flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-widest font-bold text-zinc-600 dark:text-zinc-300">
+            {label}
+          </span>
+          <span className={`flex items-center justify-center w-6 h-6 rounded-md ${tokens.chipBg} ${tokens.chipText}`}>
+            <Icon className="w-3.5 h-3.5" />
+          </span>
+        </div>
+        <div className="flex items-baseline gap-1">
+          <span className="text-2xl font-black tabular-nums text-zinc-900 dark:text-white leading-none">{value}</span>
+          {unit && <span className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{unit}</span>}
+          {trend === 'up'   && <ArrowUp   className="w-3.5 h-3.5 text-red-500 ml-0.5" />}
+          {trend === 'down' && <ArrowDown className="w-3.5 h-3.5 text-emerald-500 ml-0.5" />}
+        </div>
+        {sub && (
+          <div className="flex items-center gap-1.5 text-[11px] leading-tight text-zinc-600 dark:text-zinc-400">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${tokens.dot}`} aria-hidden />
+            {sub}
+          </div>
+        )}
       </div>
-      <div className="flex items-baseline gap-1">
-        <span className="text-2xl font-black tabular-nums text-zinc-900 dark:text-zinc-50">{value}</span>
-        {unit && <span className="text-xs text-zinc-500">{unit}</span>}
-        {trend === 'up'   && <ArrowUp   className="w-3 h-3 text-red-500 ml-1" />}
-        {trend === 'down' && <ArrowDown className="w-3 h-3 text-emerald-500 ml-1" />}
-      </div>
-      {sub && <span className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-tight">{sub}</span>}
     </div>
   );
 }
@@ -489,25 +514,25 @@ export default function PressureAnalysisTab({ data, simStats, sectors }: Props) 
     <div className="h-full min-h-0 flex flex-col gap-3 overflow-y-auto pr-0.5">
 
       {/* ── Filtros ── */}
-      <div className="flex flex-wrap items-center gap-2 flex-shrink-0">
-        <div className="flex items-center gap-1.5 text-xs">
-          <Filter className="w-3.5 h-3.5 text-zinc-400" />
-          <span className="text-zinc-500 font-medium">Setor:</span>
+      <div className="flex flex-wrap items-center gap-3 flex-shrink-0 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2">
+        <div className="flex items-center gap-2 text-xs">
+          <Filter className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+          <span className="text-zinc-600 dark:text-zinc-300 font-semibold">Setor:</span>
           <select
             value={selectedSector}
             onChange={e => setSelectedSector(e.target.value)}
-            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs text-zinc-800 dark:text-zinc-100"
+            className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1 text-xs text-zinc-800 dark:text-zinc-100 focus:border-cyan-500 focus:outline-none"
           >
             <option value="all">Todos os setores</option>
             {sectors.map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}
           </select>
         </div>
-        <div className="flex items-center gap-1.5 text-xs">
-          <span className="text-zinc-500 font-medium">Status:</span>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-zinc-600 dark:text-zinc-300 font-semibold">Status:</span>
           <select
             value={classFilter}
             onChange={e => setClassFilter(e.target.value as PressClass | 'all')}
-            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs text-zinc-800 dark:text-zinc-100"
+            className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-2 py-1 text-xs text-zinc-800 dark:text-zinc-100 focus:border-cyan-500 focus:outline-none"
           >
             <option value="all">Todos</option>
             {(Object.keys(CLASS_CONFIG) as PressClass[]).map(k => (
@@ -515,11 +540,13 @@ export default function PressureAnalysisTab({ data, simStats, sectors }: Props) 
             ))}
           </select>
         </div>
-        <span className="text-[11px] text-zinc-400 ml-auto">{nodeStats.length} nós · {hasTs ? 'com série temporal' : 'pressão estática'}</span>
+        <span className="text-[11px] text-zinc-500 dark:text-zinc-400 ml-auto font-medium">
+          <span className="font-bold text-zinc-700 dark:text-zinc-200">{nodeStats.length}</span> nós · {hasTs ? 'com série temporal' : 'pressão estática'}
+        </span>
       </div>
 
       {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 flex-shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 flex-shrink-0">
         <KpiCard label="Pressão Média" value={fmt1(stats.avg)} unit="mca"
           color={stats.avg < P_MIN ? 'red' : stats.avg > P_MAX ? 'orange' : 'emerald'} icon={Gauge} />
         <KpiCard label="Pressão Mínima" value={fmt1(stats.min)} unit="mca"
@@ -532,7 +559,7 @@ export default function PressureAnalysisTab({ data, simStats, sectors }: Props) 
           sub={`${stats.okCount} adequados`} color={stats.criticalCount > 0 ? 'red' : 'emerald'} icon={AlertTriangle} />
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 flex-shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 flex-shrink-0">
         <KpiCard label="Abaixo do Mínimo" value={fmtPct(stats.pctBelowMin)}
           color={stats.pctBelowMin > 20 ? 'red' : stats.pctBelowMin > 5 ? 'amber' : 'emerald'} icon={TrendingDown} />
         <KpiCard label="Acima do Máximo" value={fmtPct(stats.pctAboveMax)}

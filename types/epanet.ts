@@ -85,6 +85,17 @@ export interface NetworkData {
   telemetrySensors?: TelemetrySensor[];
   telemetryReadings?: Record<string, TelemetrySample[]>;
   timeSeries?: TimeSeriesData;
+  /**
+   * Transform geográfico que estava em uso quando este INP foi salvo.
+   * Restaurar `anchor` + `frozenCenter` na importação garante que a rede
+   * volte para o mesmo lugar do mapa onde foi editada — sem isso, o
+   * cx/cy é recalculado a cada sessão e a rede aparece em outro local.
+   */
+  geoTransform?: {
+    mode?: 'wgs84' | 'utm-south' | 'local-meters';
+    anchor?: { lat: number; lng: number; label?: string };
+    frozenCenter?: { cx: number; cy: number };
+  };
   summary: {
     totalNodes: number;
     junctionsCount: number;

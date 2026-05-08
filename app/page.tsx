@@ -53,7 +53,7 @@ import { addLink, addNode, deleteLink, deleteNode, networkToInp, updateLinkAttrs
 import TimeSlider from '../components/TimeSlider';
 import { networkToGeoJson } from '../lib/inpToGeoJson';
 import { generateAISectorization } from '../lib/aiSectorization';
-import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2, Droplets, Boxes } from 'lucide-react';
+import { Layers, Play, Pause, Loader2, Map as MapIcon, Table as TableIcon, AlertTriangle, TrendingDown, Network, RefreshCw, Gauge, ClipboardList, Download, ShieldAlert, MapPin, Sparkles, Waves, Cpu, Bot, Leaf, Maximize2, LocateFixed, XCircle, Camera, Sun, Moon, PanelLeftOpen, PanelLeftClose, Eye, SlidersHorizontal, Info, ChevronDown, Home as HomeIcon, Undo2, Redo2, Droplets, Boxes, Trash2 } from 'lucide-react';
 import { hasIfcModel, getAssetIfcRoute } from '../lib/ifc/assetMap';
 import PatternEditor, { DEFAULT_PATTERN } from '../components/PatternEditor';
 import * as turf from '@turf/turf';
@@ -392,12 +392,22 @@ export default function Home() {
   const [simulationError, setSimulationError] = useState<SimulationErrorInfo | null>(null);
   const [geoAnchor, setGeoAnchorState] = useState<GeoAnchor>(DEFAULT_ANCHOR);
   const [showGeoAnchorMenu, setShowGeoAnchorMenu] = useState(false);
+  // Bumpado quando o usuário carrega um INP novo. HydraulicMap só faz
+  // auto-fit quando este valor muda — edições incrementais não disparam
+  // refit, mantendo o zoom/pan que o usuário escolheu.
+  const [mapRefitKey, setMapRefitKey] = useState(0);
 
   // Centro do transform geográfico — congelado por inpContent + anchor para
   // não se deslocar quando o usuário insere nós fora da bbox original.
   // Sem isso, cada nó novo recalculava cx/cy e fazia tudo "pular" no mapa.
   const geoCenter = useMemo(() => {
     if (!networkData) return undefined;
+    // Se o INP traz um center congelado salvo (de uma sessão anterior),
+    // respeita esse valor — assim a rede volta para o mesmo lugar.
+    const persisted = networkData.geoTransform?.frozenCenter;
+    if (persisted && Number.isFinite(persisted.cx) && Number.isFinite(persisted.cy)) {
+      return { cx: persisted.cx, cy: persisted.cy };
+    }
     const xs: number[] = [];
     const ys: number[] = [];
     for (const n of Object.values(networkData.nodes)) {
@@ -509,6 +519,17 @@ export default function Home() {
   const [activeAISectorizationScenarioId, setActiveAISectorizationScenarioId] = useState<string | null>(null);
   const [viewer3DAsset, setViewer3DAsset] = useState<NodeElement | LinkElement | null>(null);
 
+  // Painel temporário "Limpar por categoria" — utilitário de testes para
+  // remover em massa todos os elementos de um tipo (junctions, tubos,
+  // tanques, etc.). Inclui também coleções derivadas como vértices de
+  // curvatura, setores e consumidores.
+  type BulkCategory =
+    | 'junctions' | 'reservoirs' | 'tanks'
+    | 'pipes' | 'pumps' | 'valves'
+    | 'vertices' | 'sectors' | 'customerMeters';
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [bulkCategory, setBulkCategory] = useState<BulkCategory>('junctions');
+
   /** Apply a specific timestep from the timeSeries to the networkData values shown on map */
   const applyTimestep = useCallback((index: number) => {
     setSelectedTimeIndex(index);
@@ -553,7 +574,20 @@ export default function Home() {
     try {
       const parsedData = parseInpFile(content);
       const syncedData = syncLinkLengths(parsedData);
+      // Restaura o transform geográfico salvo no INP (anchor + center congelado).
+      // Sem isso, o cx/cy é recalculado da bbox dos pontos atuais a cada
+      // sessão, fazendo a rede aparecer em outro lugar do mapa-base.
+      if (parsedData.geoTransform?.anchor) {
+        const a = parsedData.geoTransform.anchor;
+        if (typeof a.lat === 'number' && typeof a.lng === 'number') {
+          // Atualiza só o estado; não persiste no localStorage para preservar
+          // a preferência global do usuário.
+          setGeoAnchorState({ lat: a.lat, lng: a.lng, label: a.label });
+        }
+      }
       setNetworkData(withSummary(syncedData));
+      // Carga de novo INP: força o mapa a re-enquadrar.
+      setMapRefitKey((k) => k + 1);
       // Reseta histórico de undo/redo ao carregar um novo arquivo
       setNetworkPast([]);
       setNetworkFuture([]);
@@ -952,9 +986,14 @@ export default function Home() {
   const handleCreateCustomerMeters = useCallback(() => {
     if (!networkData) return;
 
-    const distributionPipes = Object.values(networkData.links).filter((link) => link.type === 'pipe');
+    // Apenas tubos de "Rede" (distribuição) recebem consumidores.
+    // Adutoras (tipoPipe === 'Adutora') são tubos de transporte/transmissão
+    // sem ligações domiciliares — devem ser ignoradas pela geração.
+    const distributionPipes = Object.values(networkData.links).filter(
+      (link) => link.type === 'pipe' && link.tipoPipe !== 'Adutora',
+    );
     if (distributionPipes.length === 0) {
-      setError('Nao ha trechos de distribuicao (pipes) para gerar customer meters.');
+      setError('Nao ha trechos de distribuicao (pipes de Rede) para gerar customer meters.');
       return;
     }
 
@@ -1008,8 +1047,10 @@ export default function Home() {
 
       const nx = -dy / len;
       const ny = dx / len;
-      // Fileira única, deslocada para um lado só, com distância maior do trecho
-      const baseOffset = Math.min(Math.max(len * 0.18, 14), 36);
+      // Offset pequeno (ramal residencial típico) — perto da rede.
+      // 4% do trecho, com piso de 3 m e teto de 8 m. Em ruas curtas (~20 m)
+      // dá ~3 m; em quadras longas (~200 m), 8 m.
+      const baseOffset = Math.min(Math.max(len * 0.04, 3), 8);
       const setorId = sectors.find((sector) => sector.linkIds.includes(pipe.id))?.id ?? '';
       const distances: number[] = [];
 
@@ -1029,9 +1070,12 @@ export default function Home() {
         const touchX = n1.coordinates!.x + dx * t;
         const touchY = n1.coordinates!.y + dy * t;
 
-        // Fileira única, sempre do mesmo lado (positivo da normal)
-        const candidateX = touchX + nx * baseOffset;
-        const candidateY = touchY + ny * baseOffset;
+        // Alterna lado a lado da rede: medidores pares vão para a esquerda
+        // do tubo (sentido n1→n2), ímpares para a direita. Reproduz a
+        // realidade do saneamento — casas dos dois lados da rua.
+        const side = meterIndex % 2 === 0 ? 1 : -1;
+        const candidateX = touchX + nx * baseOffset * side;
+        const candidateY = touchY + ny * baseOffset * side;
 
         const dist1 = Math.hypot(touchX - n1.coordinates!.x, touchY - n1.coordinates!.y);
         const dist2 = Math.hypot(touchX - n2.coordinates!.x, touchY - n2.coordinates!.y);
@@ -1307,6 +1351,114 @@ export default function Home() {
         ...data,
         links: { ...data.links, [linkId]: { ...link, vertices: next } },
       };
+    });
+  };
+
+  // Conta quantos elementos existem em cada categoria suportada pelo
+  // painel temporário "Limpar por categoria".
+  const bulkCounts = useMemo<Record<BulkCategory, number>>(() => {
+    const empty: Record<BulkCategory, number> = {
+      junctions: 0, reservoirs: 0, tanks: 0,
+      pipes: 0, pumps: 0, valves: 0,
+      vertices: 0, sectors: 0, customerMeters: 0,
+    };
+    if (!networkData) return empty;
+    for (const n of Object.values(networkData.nodes)) {
+      if (n.type === 'junction') empty.junctions += 1;
+      else if (n.type === 'reservoir') empty.reservoirs += 1;
+      else if (n.type === 'tank') empty.tanks += 1;
+    }
+    for (const l of Object.values(networkData.links)) {
+      if (l.type === 'pipe') empty.pipes += 1;
+      else if (l.type === 'pump') empty.pumps += 1;
+      else if (l.type === 'valve') empty.valves += 1;
+      if (Array.isArray(l.vertices)) empty.vertices += l.vertices.length;
+    }
+    empty.sectors = sectors.length;
+    empty.customerMeters = customerMeters.length;
+    return empty;
+  }, [networkData, sectors, customerMeters]);
+
+  // Apaga em massa todos os elementos de uma categoria. Para nós, remove
+  // automaticamente os links conectados (preserva integridade da rede).
+  const handleBulkDelete = (category: BulkCategory) => {
+    if (!networkData) return;
+
+    if (category === 'sectors') {
+      setSectors([]);
+      setFilteredSectorId(null);
+      // Persiste a remoção também no NetworkData (para não voltar via reload).
+      updateNetwork((data) => ({ ...data, sectors: [] }));
+      return;
+    }
+    if (category === 'customerMeters') {
+      setCustomerMeters([]);
+      setSelectedCustomerMeter(null);
+      updateNetwork((data) => ({ ...data, customerMeters: [] }));
+      return;
+    }
+
+    updateNetwork((data) => {
+      // Vértices: zera o array de vertices em todos os links.
+      if (category === 'vertices') {
+        const links: typeof data.links = {};
+        for (const [id, l] of Object.entries(data.links)) {
+          links[id] = Array.isArray(l.vertices) && l.vertices.length > 0
+            ? { ...l, vertices: [] }
+            : l;
+        }
+        return { ...data, links };
+      }
+
+      // Links de um tipo específico: simplesmente filtra do dicionário.
+      if (category === 'pipes' || category === 'pumps' || category === 'valves') {
+        const targetType =
+          category === 'pipes' ? 'pipe' :
+          category === 'pumps' ? 'pump' : 'valve';
+        const links: typeof data.links = {};
+        for (const [id, l] of Object.entries(data.links)) {
+          if (l.type !== targetType) links[id] = l;
+        }
+        return { ...data, links };
+      }
+
+      // Nós de um tipo específico: remove os nós e todos os links que os
+      // referenciam (para não deixar links órfãos apontando para id inexistente).
+      const targetNodeType =
+        category === 'junctions' ? 'junction' :
+        category === 'reservoirs' ? 'reservoir' : 'tank';
+      const removedNodeIds = new Set<string>();
+      const nodes: typeof data.nodes = {};
+      for (const [id, n] of Object.entries(data.nodes)) {
+        if (n.type === targetNodeType) {
+          removedNodeIds.add(id);
+        } else {
+          nodes[id] = n;
+        }
+      }
+      const links: typeof data.links = {};
+      for (const [id, l] of Object.entries(data.links)) {
+        if (!removedNodeIds.has(l.node1) && !removedNodeIds.has(l.node2)) {
+          links[id] = l;
+        }
+      }
+      return { ...data, nodes, links };
+    });
+
+    // Limpa seleção se o elemento selecionado foi apagado.
+    setSelectedElement((prev) => {
+      if (!prev) return prev;
+      if (
+        (category === 'junctions' && prev.type === 'junction') ||
+        (category === 'reservoirs' && prev.type === 'reservoir') ||
+        (category === 'tanks' && prev.type === 'tank') ||
+        (category === 'pipes' && prev.type === 'pipe') ||
+        (category === 'pumps' && prev.type === 'pump') ||
+        (category === 'valves' && prev.type === 'valve')
+      ) {
+        return null;
+      }
+      return prev;
     });
   };
 
@@ -1861,7 +2013,8 @@ export default function Home() {
           customerMeters,
           smartSensors: smartInstalledSensors,
         },
-        aiSectorizationConfig
+        aiSectorizationConfig,
+        { anchor: geoAnchor, frozenCenter: geoCenter },
       );
 
       if (result.sectors.length === 0) {
@@ -2013,6 +2166,18 @@ export default function Home() {
     });
   };
 
+  const handleDeleteAllCustomerMeters = () => {
+    if (customerMeters.length === 0) return;
+    if (!confirm(`Apagar todos os ${customerMeters.length} medidores? As demandas dos nós voltam aos valores base. Esta ação não pode ser desfeita.`)) return;
+    setCustomerMeters([]);
+    setSelectedCustomerMeter(null);
+    if (Object.keys(baseNodeDemandById).length > 0) {
+      updateNetwork(data => ({ ...applyCustomerMeterDemands(data, [], baseNodeDemandById), customerMeters: [] }));
+    } else {
+      updateNetwork(data => ({ ...data, customerMeters: [] }));
+    }
+  };
+
   const downloadRegeneratedInp = () => {
     if (!networkData) return;
     const regenerated = networkToInp(
@@ -2024,6 +2189,13 @@ export default function Home() {
         telemetrySensors,
         telemetryReadings,
         hydraulicControls,
+        // Persiste o transform geográfico para que o INP volte para o
+        // mesmo lugar do mapa quando reaberto.
+        geoTransform: {
+          ...(networkData.geoTransform ?? {}),
+          anchor: { lat: geoAnchor.lat, lng: geoAnchor.lng, label: geoAnchor.label },
+          ...(geoCenter ? { frozenCenter: geoCenter } : {}),
+        },
       },
       { includeMetadata: true }
     );
@@ -2268,6 +2440,114 @@ export default function Home() {
 
             {networkData && (
               <div className="flex items-center gap-3">
+                {/* TEMPORÁRIO — Limpar por categoria */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkDelete((v) => !v)}
+                    className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border border-amber-700/60 bg-amber-950/30 text-amber-200 hover:border-amber-500 hover:bg-amber-900/40 transition-colors"
+                    title="Apaga em massa todos os elementos de uma categoria. Ferramenta temporária para testes."
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Limpar por categoria
+                    <span className="ml-1 inline-block px-1.5 py-0.5 rounded border border-amber-700/60 text-[9px] uppercase tracking-wider text-amber-300/80">
+                      Temp.
+                    </span>
+                    <ChevronDown
+                      className={`w-3 h-3 text-amber-300/70 transition-transform ${showBulkDelete ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {showBulkDelete && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowBulkDelete(false)} />
+                      <div className="absolute right-0 top-full mt-1 z-50 w-80 rounded-lg border border-amber-800/60 bg-zinc-950 shadow-2xl">
+                        <div className="px-3 py-2 border-b border-zinc-800 flex items-center gap-2">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                          <div className="text-[10px] uppercase tracking-wider text-amber-300 font-bold">
+                            Apagar em massa (TEMPORÁRIO)
+                          </div>
+                        </div>
+                        <div className="px-3 py-3 space-y-3">
+                          <div>
+                            <label
+                              htmlFor="bulk-delete-category"
+                              className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold block mb-1"
+                            >
+                              Categoria a remover
+                            </label>
+                            <select
+                              id="bulk-delete-category"
+                              value={bulkCategory}
+                              onChange={(e) => setBulkCategory(e.target.value as BulkCategory)}
+                              size={9}
+                              className="w-full rounded border border-zinc-800 bg-black px-2 py-1 text-xs text-zinc-100 focus:border-amber-500 focus:outline-none"
+                            >
+                              <option value="junctions">
+                                Junctions ({bulkCounts.junctions})
+                              </option>
+                              <option value="reservoirs">
+                                Reservatórios ({bulkCounts.reservoirs})
+                              </option>
+                              <option value="tanks">
+                                Tanques ({bulkCounts.tanks})
+                              </option>
+                              <option value="pipes">
+                                Tubos ({bulkCounts.pipes})
+                              </option>
+                              <option value="pumps">
+                                Bombas ({bulkCounts.pumps})
+                              </option>
+                              <option value="valves">
+                                Válvulas ({bulkCounts.valves})
+                              </option>
+                              <option value="vertices">
+                                Vértices de curvatura ({bulkCounts.vertices})
+                              </option>
+                              <option value="sectors">
+                                Setores / DMC ({bulkCounts.sectors})
+                              </option>
+                              <option value="customerMeters">
+                                Consumidores ({bulkCounts.customerMeters})
+                              </option>
+                            </select>
+                          </div>
+
+                          {(bulkCategory === 'junctions' ||
+                            bulkCategory === 'reservoirs' ||
+                            bulkCategory === 'tanks') && (
+                            <div className="text-[10px] text-amber-300/80 leading-relaxed border border-amber-900/40 bg-amber-950/30 rounded px-2 py-1.5">
+                              <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                              Remover nós também apaga todos os tubos/bombas/válvulas conectados a eles.
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={bulkCounts[bulkCategory] === 0}
+                            onClick={() => {
+                              const n = bulkCounts[bulkCategory];
+                              if (n === 0) return;
+                              if (
+                                !confirm(
+                                  `Apagar TODOS os ${n} elementos da categoria "${bulkCategory}"? Esta ação pode ser desfeita com Ctrl+Z.`,
+                                )
+                              ) {
+                                return;
+                              }
+                              handleBulkDelete(bulkCategory);
+                              setShowBulkDelete(false);
+                            }}
+                            className="w-full flex items-center justify-center gap-2 text-xs font-bold px-3 py-2 rounded-md bg-red-600 text-white hover:bg-red-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Apagar tudo
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 {fileName && (
                 <button
                   onClick={() => {
@@ -2861,6 +3141,9 @@ export default function Home() {
                         editModeOverride={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft || selectedElement) ? gisEditMode : undefined}
                         onEditModeChange={(showModelagemPanel || showQuickModelPanel || pendingHydraulicDraft || selectedElement) ? setGisEditMode : undefined}
                         frozenCenter={geoCenter}
+                        refitKey={mapRefitKey}
+                        customerMeters={customerMeters}
+                        showCustomerMeters={showCustomerMeters && mapLayers.customerMeters}
                         onPipeVertexAdded={handlePipeVertexAdded}
                         onPipeVertexMoved={handlePipeVertexMoved}
                         onPipeVertexDeleted={handlePipeVertexDeleted}
@@ -3048,6 +3331,9 @@ export default function Home() {
                           onPipeVertexDeleted={handlePipeVertexDeleted}
                           anchor={geoAnchor}
                           frozenCenter={geoCenter}
+                          refitKey={mapRefitKey}
+                          customerMeters={customerMeters}
+                          showCustomerMeters={showCustomerMeters && mapLayers.customerMeters}
                         />
                       )}
 
@@ -3057,6 +3343,7 @@ export default function Home() {
                           onSaveNode={handleSaveNode}
                           onSaveLink={handleSaveLink}
                           onSaveCustomerMeter={handleSaveCustomerMeter}
+                          onDeleteAllCustomerMeters={handleDeleteAllCustomerMeters}
                         />
                       )}
 

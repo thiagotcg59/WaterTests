@@ -16,7 +16,7 @@ type SectionKey =
   | 'JUNCTIONS' | 'RESERVOIRS' | 'TANKS'
   | 'PIPES' | 'PUMPS' | 'VALVES'
   | 'COORDINATES' | 'VERTICES'
-  | 'CONTROLS'
+  | 'STATUS' | 'CONTROLS'
   | 'CUSTOMER_METERS'
   | 'CUSTOMER_METER_PRESSURES';
 
@@ -142,6 +142,20 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
         }
       }
       return out;
+    case 'STATUS':
+      // Regenerada a partir dos links atuais — garante que entradas
+      // órfãs (links já removidos) não causem Error 204 do EPANET.
+      // Status default ("Open") fica implícito: só emitimos as
+      // exceções (CLOSED ou setting numérico para válvulas).
+      out.push(';ID\tStatus/Setting');
+      for (const l of Object.values(data.links)) {
+        const raw = typeof l.status === 'string' ? l.status.trim() : '';
+        if (!raw) continue;
+        const upper = raw.toUpperCase();
+        if (upper === 'OPEN' || upper === '') continue;
+        out.push([quote(l.id), upper === 'CLOSED' ? 'CLOSED' : raw].join('\t'));
+      }
+      return out;
     case 'CONTROLS':
       out.push(';Controles operacionais regenerados a partir da aba Modelagem Hidráulica');
       for (const ctrl of data.hydraulicControls ?? []) {
@@ -151,6 +165,9 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
         if (!cond) continue;
         const linkId = ctrl.targetId;
         if (!linkId) continue;
+        // Pula controles órfãos (target removido) — evita Error 204 do EPANET.
+        if (!data.links[linkId]) continue;
+        if (cond.sensorId && cond.sensorType !== 'time' && !data.nodes[cond.sensorId] && !data.links[cond.sensorId]) continue;
 
         // Ação: OPEN / CLOSED ou setting numérico (ACTIVE)
         let action: string;
@@ -201,7 +218,7 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
 const ALL_SECTIONS: SectionKey[] = [
   'JUNCTIONS', 'RESERVOIRS', 'TANKS',
   'PIPES', 'PUMPS', 'VALVES', 'COORDINATES', 'VERTICES',
-  'CONTROLS',
+  'STATUS', 'CONTROLS',
   'CUSTOMER_METERS',
   'CUSTOMER_METER_PRESSURES',
 ];
@@ -249,6 +266,14 @@ function appendDashboardMetadata(inp: string, data: NetworkData): string {
     `;@DG_META_TELEMETRY_READINGS ${encodeBase64Utf8(JSON.stringify(data.telemetryReadings ?? {}))}`,
     `;@DG_META_LINK_EXTRAS ${encodeBase64Utf8(JSON.stringify(linkExtras))}`,
   ];
+
+  // Persiste o transform geográfico em uso (anchor + frozenCenter) para que
+  // o INP regenerado volte para o mesmo lugar do mapa quando reaberto.
+  if (data.geoTransform) {
+    metadataLines.push(
+      `;@DG_META_GEO_TRANSFORM ${encodeBase64Utf8(JSON.stringify(data.geoTransform))}`,
+    );
+  }
 
   return `${stripMetadataLines(inp)}\n${metadataLines.join('\n')}\n`;
 }
