@@ -154,6 +154,9 @@ export default function EditableElementPanel({
         if (rArea !== undefined && rArea > 0) setIfDefined('baseArea', rArea);
       } else if (node.type === 'tank') {
         setIfDefined('elevation', optionalNumber(form.get('elevation')));
+        const tipo = form.get('tipoReservatorio');
+        if (tipo === 'apoiado' || tipo === 'elevado') patch['tipoReservatorio'] = tipo;
+        setIfDefined('alturaFuste', optionalNumber(form.get('alturaFuste')));
         setIfDefined('initLevel', optionalNumber(form.get('initLevel')));
         setIfDefined('minLevel', optionalNumber(form.get('minLevel')));
         setIfDefined('maxLevel', optionalNumber(form.get('maxLevel')));
@@ -321,6 +324,78 @@ function NodeResults({
         <ResultRow label="Demanda atendida" value={actualDemand * 3.6} unit="m³/h" format={fmtBr(2)} />
       )}
     </div>
+  );
+}
+
+// ── Tank type & elevation section ────────────────────────────────────────────
+
+type TipoReservatorio = 'apoiado' | 'elevado';
+
+function TankTypeAndElevation({ element }: { element: NodeElement }) {
+  const el = element as NodeElement & { tipoReservatorio?: TipoReservatorio; alturaFuste?: number };
+  const initTipo: TipoReservatorio = el.tipoReservatorio === 'elevado' ? 'elevado' : 'apoiado';
+  const initFuste = typeof el.alturaFuste === 'number' ? el.alturaFuste : 0;
+  const initTerreno = initTipo === 'elevado'
+    ? (element.elevation ?? 0) - initFuste
+    : (element.elevation ?? 0);
+
+  const [tipo, setTipo] = useState<TipoReservatorio>(initTipo);
+  const [terreno, setTerreno] = useState(initTerreno);
+  const [fuste, setFuste] = useState(initFuste);
+
+  const elevBase = tipo === 'elevado' ? terreno + fuste : terreno;
+
+  const inputCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
+  const btnCls = (active: boolean) =>
+    `flex-1 py-1.5 text-xs font-semibold transition-colors ${active ? 'bg-blue-700 text-white' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100'}`;
+
+  return (
+    <>
+      <input type="hidden" name="elevation" value={elevBase} />
+      <input type="hidden" name="tipoReservatorio" value={tipo} />
+      <input type="hidden" name="alturaFuste" value={fuste} />
+
+      <div>
+        <span className="mb-1 block text-xs text-zinc-500">Tipo de reservatório</span>
+        <div className="flex overflow-hidden rounded-md border border-zinc-800">
+          <button type="button" onClick={() => setTipo('apoiado')} className={btnCls(tipo === 'apoiado')}>Apoiado</button>
+          <button type="button" onClick={() => setTipo('elevado')} className={btnCls(tipo === 'elevado')}>Elevado</button>
+        </div>
+      </div>
+
+      <label className="block">
+        <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">
+          {tipo === 'elevado' ? 'Elevação do terreno' : 'Elevação'} <span>m</span>
+        </span>
+        <input
+          className={inputCls}
+          type="number" step="0.01"
+          value={terreno}
+          onChange={e => setTerreno(parseFloat(e.target.value) || 0)}
+        />
+      </label>
+
+      {tipo === 'elevado' && (
+        <>
+          <label className="block">
+            <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">
+              Altura do fuste <span>m</span>
+            </span>
+            <input
+              className={inputCls}
+              type="number" step="0.01" min="0"
+              value={fuste}
+              onChange={e => setFuste(parseFloat(e.target.value) || 0)}
+            />
+          </label>
+          <div className="rounded-md border border-blue-800/30 bg-blue-900/10 px-3 py-2">
+            <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-400">Elevação da base (EPANET)</div>
+            <div className="font-mono text-sm font-semibold text-zinc-100">{elevBase.toFixed(2)} m</div>
+            <div className="mt-0.5 text-[10px] text-zinc-600">Terreno ({terreno.toFixed(2)}) + Fuste ({fuste.toFixed(2)})</div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
@@ -497,7 +572,7 @@ function NodeFields({
   // tank
   return (
     <>
-      <Field name="elevation" label="Elevação da base" unit="m" defaultValue={numberValue(element.elevation)} />
+      <TankTypeAndElevation element={element} />
       <Field name="initLevel" label="Nível inicial" unit="m" defaultValue={numberValue(element.initLevel)} />
       <TankGeometrySection element={element} />
       <Field name="minVolume" label="Volume mínimo (EPANET)" unit="m³" defaultValue={numberValue(element.minVolume)} />

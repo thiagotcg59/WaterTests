@@ -123,6 +123,9 @@ function SelectedElementEditor({
   const [advanced, setAdvanced] = useState(false);
   const [tankShapeMode, setTankShapeMode] = useState<'diameter' | 'area'>('diameter');
   const [resShapeMode, setResShapeMode] = useState<'diameter' | 'area'>('diameter');
+  const _elInit = element as NodeElement & { tipoReservatorio?: 'apoiado' | 'elevado'; alturaFuste?: number };
+  const [tipoResTank, setTipoResTank] = useState<'apoiado' | 'elevado'>(_elInit.tipoReservatorio === 'elevado' ? 'elevado' : 'apoiado');
+  const [alturaFusteTank, setAlturaFusteTank] = useState(_elInit.alturaFuste ?? 0);
 
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
   const val = (k: string, fallback: unknown = '') => form[k] !== undefined ? form[k] : String(fallback ?? '');
@@ -164,7 +167,10 @@ function SelectedElementEditor({
         const d = pn('resDiameter'); if (d !== undefined && d > 0) patch.diameter = d;
         const a = pn('resBaseArea'); if (a !== undefined && a > 0) patch.baseArea = a;
       } else if (element.type === 'tank') {
-        patch.elevation = pn('elevation');
+        const terreno = pn('elevation') ?? 0;
+        patch.elevation = tipoResTank === 'elevado' ? terreno + alturaFusteTank : terreno;
+        patch.tipoReservatorio = tipoResTank;
+        if (tipoResTank === 'elevado') patch.alturaFuste = alturaFusteTank;
         patch.initLevel = pn('initLevel');
         patch.minLevel = pn('minLevel');
         patch.maxLevel = pn('maxLevel');
@@ -265,7 +271,23 @@ function SelectedElementEditor({
           </div>
         </>}
         {element.type === 'tank' && <>
-          <Field label="Elevação da base (m)"><input className={inputCls} type="number" step="0.1" value={val('elevation', n.elevation)} onChange={e => set('elevation', e.target.value)} /></Field>
+          <Field label="Tipo de reservatório">
+            <div className="flex overflow-hidden rounded border border-zinc-700">
+              <button type="button" onClick={() => setTipoResTank('apoiado')} className={`flex-1 py-1 text-[10px] font-semibold ${tipoResTank === 'apoiado' ? 'bg-blue-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Apoiado</button>
+              <button type="button" onClick={() => setTipoResTank('elevado')} className={`flex-1 py-1 text-[10px] font-semibold ${tipoResTank === 'elevado' ? 'bg-blue-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Elevado</button>
+            </div>
+          </Field>
+          <Field label={tipoResTank === 'elevado' ? 'Elevação do terreno (m)' : 'Elevação (m)'}>
+            <input className={inputCls} type="number" step="0.1" value={val('elevation', tipoResTank === 'elevado' ? (n.elevation ?? 0) - (_elInit.alturaFuste ?? 0) : n.elevation)} onChange={e => set('elevation', e.target.value)} />
+          </Field>
+          {tipoResTank === 'elevado' && <>
+            <Field label="Altura do fuste (m)">
+              <input className={inputCls} type="number" step="0.1" min="0" value={alturaFusteTank} onChange={e => setAlturaFusteTank(parseFloat(e.target.value) || 0)} />
+            </Field>
+            <div className="rounded bg-blue-900/20 px-2 py-1 text-[10px] text-blue-300">
+              Elev. base EPANET: <span className="font-mono font-semibold">{((parseFloat(form.elevation?.replace(',', '.') ?? '') || (tipoResTank === 'elevado' ? (n.elevation ?? 0) - (_elInit.alturaFuste ?? 0) : (n.elevation ?? 0))) + alturaFusteTank).toFixed(2)} m</span>
+            </div>
+          </>}
           <Field label="Nível inicial (m)"><input className={inputCls} type="number" step="0.1" value={val('initLevel', n.initLevel)} onChange={e => set('initLevel', e.target.value)} /></Field>
           <div className="rounded border border-zinc-800 p-2 space-y-1.5">
             <div className="text-[9px] uppercase tracking-wider text-zinc-600">Geometria</div>
@@ -383,6 +405,8 @@ function CreateElementForm({
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [tipoResCreate, setTipoResCreate] = useState<'apoiado' | 'elevado'>('apoiado');
+  const [alturaFusteCreate, setAlturaFusteCreate] = useState(0);
 
   const nodes = useMemo(() => Object.values(data.nodes).map(n => n.id).sort(), [data.nodes]);
 
@@ -449,8 +473,12 @@ function CreateElementForm({
       }
       if (kind === 'tank') {
         const d = num('diameter', 10);
-        const tankNode: NodeElement = { id: eid, type: 'tank', elevation: num('elevation', 0), initLevel: num('initLevel', 1), minLevel: num('minLevel', 0), maxLevel: num('maxLevel', 5), diameter: d, coordinates: offset };
+        const terreno = num('elevation', 0);
+        const elevBase = tipoResCreate === 'elevado' ? terreno + alturaFusteCreate : terreno;
+        const tankNode: NodeElement = { id: eid, type: 'tank', elevation: elevBase, initLevel: num('initLevel', 1), minLevel: num('minLevel', 0), maxLevel: num('maxLevel', 5), diameter: d, coordinates: offset };
         tankNode.baseArea = Math.PI * (d / 2) ** 2;
+        tankNode.tipoReservatorio = tipoResCreate;
+        if (tipoResCreate === 'elevado') tankNode.alturaFuste = alturaFusteCreate;
         onAddNode(tankNode);
       }
     }
@@ -506,7 +534,17 @@ function CreateElementForm({
         <Field label="Elevação da base (m)"><input className={inputCls} type="number" value={fields.elevation ?? ''} onChange={e => set('elevation', e.target.value)} placeholder="ref." /></Field>
       </>}
       {kind === 'tank' && <>
-        <Field label="Elevação da base (m)"><input className={inputCls} type="number" value={fields.elevation ?? ''} onChange={e => set('elevation', e.target.value)} placeholder="0" /></Field>
+        <Field label="Tipo de reservatório">
+          <div className="flex overflow-hidden rounded border border-zinc-700">
+            <button type="button" onClick={() => setTipoResCreate('apoiado')} className={`flex-1 py-1 text-[10px] font-semibold ${tipoResCreate === 'apoiado' ? 'bg-blue-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Apoiado</button>
+            <button type="button" onClick={() => setTipoResCreate('elevado')} className={`flex-1 py-1 text-[10px] font-semibold ${tipoResCreate === 'elevado' ? 'bg-blue-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Elevado</button>
+          </div>
+        </Field>
+        <Field label={tipoResCreate === 'elevado' ? 'Elevação do terreno (m)' : 'Elevação (m)'}><input className={inputCls} type="number" value={fields.elevation ?? ''} onChange={e => set('elevation', e.target.value)} placeholder="0" /></Field>
+        {tipoResCreate === 'elevado' && <>
+          <Field label="Altura do fuste (m)"><input className={inputCls} type="number" step="0.1" min="0" value={alturaFusteCreate || ''} onChange={e => setAlturaFusteCreate(parseFloat(e.target.value) || 0)} placeholder="0" /></Field>
+          {(num('elevation') > 0 || alturaFusteCreate > 0) && <div className="rounded bg-blue-900/20 px-2 py-1 text-[10px] text-blue-300">Elev. base EPANET: <span className="font-mono font-semibold">{(num('elevation') + alturaFusteCreate).toFixed(2)} m</span></div>}
+        </>}
         <Field label="Nível inicial (m)"><input className={inputCls} type="number" value={fields.initLevel ?? ''} onChange={e => set('initLevel', e.target.value)} placeholder="1" /></Field>
         <div className="grid grid-cols-2 gap-1">
           <Field label="Nível Mín. (m)"><input className={inputCls} type="number" value={fields.minLevel ?? ''} onChange={e => set('minLevel', e.target.value)} placeholder="0" /></Field>
