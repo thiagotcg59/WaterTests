@@ -142,16 +142,25 @@ export default function EditableElementPanel({
         setIfDefined('demand', optionalNumber(form.get('demand')));
         const pattern = String(form.get('pattern') ?? '');
         if (pattern) setIfDefined('pattern', pattern);
+        setIfDefined('emitter', optionalNumber(form.get('emitter')));
       } else if (node.type === 'reservoir') {
         setIfDefined('head', optionalNumber(form.get('head')));
         const pattern = String(form.get('pattern') ?? '');
         if (pattern) setIfDefined('pattern', pattern);
+        setIfDefined('elevation', optionalNumber(form.get('elevation')));
+        const rDiam = optionalNumber(form.get('diameter'));
+        if (rDiam !== undefined && rDiam > 0) setIfDefined('diameter', rDiam);
+        const rArea = optionalNumber(form.get('baseArea'));
+        if (rArea !== undefined && rArea > 0) setIfDefined('baseArea', rArea);
       } else if (node.type === 'tank') {
         setIfDefined('elevation', optionalNumber(form.get('elevation')));
         setIfDefined('initLevel', optionalNumber(form.get('initLevel')));
         setIfDefined('minLevel', optionalNumber(form.get('minLevel')));
         setIfDefined('maxLevel', optionalNumber(form.get('maxLevel')));
         setIfDefined('diameter', optionalNumber(form.get('diameter')));
+        const tArea = optionalNumber(form.get('baseArea'));
+        if (tArea !== undefined && tArea > 0) setIfDefined('baseArea', tArea);
+        setIfDefined('minVolume', optionalNumber(form.get('minVolume')));
       }
       onSaveNode(element.id, patch);
       return;
@@ -315,15 +324,162 @@ function NodeResults({
   );
 }
 
+// ── Tank geometry section ────────────────────────────────────────────────────
+
+function TankGeometrySection({ element }: { element: NodeElement }) {
+  const initDiam = element.diameter ?? 5;
+  const initArea = typeof (element as NodeElement & { baseArea?: number }).baseArea === 'number'
+    ? (element as NodeElement & { baseArea?: number }).baseArea!
+    : Math.PI * (initDiam / 2) ** 2;
+
+  const [shapeMode, setShapeMode] = useState<'diameter' | 'area'>('diameter');
+  const [diameter, setDiameter] = useState(initDiam);
+  const [baseArea, setBaseArea] = useState(initArea);
+  const [minLevel, setMinLevel] = useState(element.minLevel ?? 0);
+  const [maxLevel, setMaxLevel] = useState(element.maxLevel ?? 0);
+
+  const volume = baseArea * Math.max(0, maxLevel - minLevel);
+
+  const syncFromDiam = (v: string) => {
+    const d = parseFloat(v.replace(',', '.'));
+    if (d > 0) { setDiameter(d); setBaseArea(Math.PI * (d / 2) ** 2); }
+  };
+  const syncFromArea = (v: string) => {
+    const a = parseFloat(v.replace(',', '.'));
+    if (a > 0) { setBaseArea(a); setDiameter(2 * Math.sqrt(a / Math.PI)); }
+  };
+
+  const inputCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
+  const btnCls = (active: boolean) =>
+    `flex-1 py-1.5 text-xs font-semibold transition-colors ${active ? 'bg-cyan-700 text-white' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100'}`;
+
+  return (
+    <>
+      {/* Hidden inputs carry computed values to FormData */}
+      <input type="hidden" name="diameter" value={diameter} />
+      <input type="hidden" name="baseArea" value={baseArea} />
+
+      <div>
+        <span className="mb-1 block text-xs text-zinc-500">Geometria da base</span>
+        <div className="flex overflow-hidden rounded-md border border-zinc-800">
+          <button type="button" onClick={() => setShapeMode('diameter')} className={btnCls(shapeMode === 'diameter')}>Diâmetro</button>
+          <button type="button" onClick={() => setShapeMode('area')} className={btnCls(shapeMode === 'area')}>Área da base</button>
+        </div>
+      </div>
+
+      {shapeMode === 'diameter' ? (
+        <label className="block">
+          <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Diâmetro <span>m</span></span>
+          <input className={inputCls} type="number" step="0.01" min="0.01" value={diameter} onChange={e => syncFromDiam(e.target.value)} />
+          <div className="mt-0.5 text-[10px] text-zinc-600">Área equivalente: {baseArea.toFixed(2)} m²</div>
+        </label>
+      ) : (
+        <label className="block">
+          <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Área da base <span>m²</span></span>
+          <input className={inputCls} type="number" step="0.01" min="0.01" value={parseFloat(baseArea.toFixed(4))} onChange={e => syncFromArea(e.target.value)} />
+          <div className="mt-0.5 text-[10px] text-zinc-600">Diâmetro equivalente: {diameter.toFixed(2)} m</div>
+        </label>
+      )}
+
+      <label className="block">
+        <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Nível mínimo <span>m</span></span>
+        <input name="minLevel" className={inputCls} type="number" step="0.01" value={minLevel} onChange={e => setMinLevel(parseFloat(e.target.value) || 0)} />
+      </label>
+      <label className="block">
+        <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Nível máximo <span>m</span></span>
+        <input name="maxLevel" className={inputCls} type="number" step="0.01" value={maxLevel} onChange={e => setMaxLevel(parseFloat(e.target.value) || 0)} />
+      </label>
+
+      <div className="rounded-md border border-cyan-800/40 bg-cyan-900/10 px-3 py-2.5">
+        <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-400">Volume útil (calculado)</div>
+        <div className="font-mono text-base font-semibold text-zinc-100">{volume.toFixed(1)} m³</div>
+        <div className="mt-0.5 text-[10px] text-zinc-600">Área × (Nível máx − Nível mín)</div>
+      </div>
+    </>
+  );
+}
+
+// ── Reservoir geometry section (informational) ───────────────────────────────
+
+function ReservoirGeometrySection({ element }: { element: NodeElement }) {
+  const initDiam = typeof element.diameter === 'number' ? element.diameter : 0;
+  const initArea = typeof (element as NodeElement & { baseArea?: number }).baseArea === 'number'
+    ? (element as NodeElement & { baseArea?: number }).baseArea!
+    : (initDiam > 0 ? Math.PI * (initDiam / 2) ** 2 : 0);
+
+  const [shapeMode, setShapeMode] = useState<'diameter' | 'area'>('diameter');
+  const [diameter, setDiameter] = useState(initDiam);
+  const [baseArea, setBaseArea] = useState(initArea);
+
+  const head = typeof element.head === 'number' ? element.head : 0;
+  const baseElev = typeof element.elevation === 'number' ? element.elevation : 0;
+  const waterHeight = Math.max(0, head - baseElev);
+  const volume = baseArea > 0 ? baseArea * waterHeight : 0;
+
+  const syncFromDiam = (v: string) => {
+    const d = parseFloat(v.replace(',', '.'));
+    if (d > 0) { setDiameter(d); setBaseArea(Math.PI * (d / 2) ** 2); }
+  };
+  const syncFromArea = (v: string) => {
+    const a = parseFloat(v.replace(',', '.'));
+    if (a > 0) { setBaseArea(a); setDiameter(2 * Math.sqrt(a / Math.PI)); }
+  };
+
+  const inputCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
+  const btnCls = (active: boolean) =>
+    `flex-1 py-1.5 text-xs font-semibold transition-colors ${active ? 'bg-indigo-700 text-white' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100'}`;
+
+  return (
+    <>
+      <input type="hidden" name="diameter" value={diameter || ''} />
+      <input type="hidden" name="baseArea" value={baseArea || ''} />
+
+      <Field name="elevation" label="Elevação da base (ref.)" unit="m" defaultValue={numberValue(element.elevation)} />
+
+      <div className="rounded-md border border-zinc-800 p-2.5 space-y-2.5">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Geometria auxiliar</div>
+
+        <div className="flex overflow-hidden rounded-md border border-zinc-800">
+          <button type="button" onClick={() => setShapeMode('diameter')} className={btnCls(shapeMode === 'diameter')}>Diâmetro</button>
+          <button type="button" onClick={() => setShapeMode('area')} className={btnCls(shapeMode === 'area')}>Área da base</button>
+        </div>
+
+        {shapeMode === 'diameter' ? (
+          <label className="block">
+            <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Diâmetro <span>m</span></span>
+            <input className={inputCls} type="number" step="0.01" min="0" value={diameter || ''} onChange={e => syncFromDiam(e.target.value)} placeholder="—" />
+            {diameter > 0 && <div className="mt-0.5 text-[10px] text-zinc-600">Área equivalente: {baseArea.toFixed(2)} m²</div>}
+          </label>
+        ) : (
+          <label className="block">
+            <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Área da base <span>m²</span></span>
+            <input className={inputCls} type="number" step="0.01" min="0" value={baseArea > 0 ? parseFloat(baseArea.toFixed(4)) : ''} onChange={e => syncFromArea(e.target.value)} placeholder="—" />
+            {baseArea > 0 && <div className="mt-0.5 text-[10px] text-zinc-600">Diâmetro equivalente: {diameter.toFixed(2)} m</div>}
+          </label>
+        )}
+
+        {volume > 0 && (
+          <div className="rounded-md border border-indigo-800/40 bg-indigo-900/10 px-3 py-2">
+            <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-400">Volume (calculado)</div>
+            <div className="font-mono text-sm font-semibold text-zinc-100">{volume.toFixed(1)} m³</div>
+            <div className="mt-0.5 text-[10px] text-zinc-600">Área × (Head − Elev. base)</div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function NodeFields({
   element, timeSeries, selectedTimeIndex,
 }: { element: NodeElement; timeSeries?: TimeSeriesData; selectedTimeIndex?: number }) {
   if (element.type === 'junction') {
     return (
       <>
-        <Field name="elevation" label="Elevacao" unit="m" defaultValue={numberValue(element.elevation)} />
+        <Field name="elevation" label="Elevação" unit="m" defaultValue={numberValue(element.elevation)} />
         <Field name="demand" label="Demanda base" unit="L/s" defaultValue={numberValue(element.demand)} />
-        <Field name="pattern" label="Padrao" defaultValue={element.pattern as string | undefined} />
+        <Field name="pattern" label="Padrão" defaultValue={element.pattern as string | undefined} />
+        <Field name="emitter" label="Emissor (coef. vazamento)" defaultValue={numberValue(element.emitter)} />
         <NodeResults element={element} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} />
       </>
     );
@@ -332,7 +488,8 @@ function NodeFields({
     return (
       <>
         <Field name="head" label="Carga / Head" unit="m" defaultValue={numberValue(element.head)} />
-        <Field name="pattern" label="Padrao" defaultValue={element.pattern as string | undefined} />
+        <Field name="pattern" label="Padrão" defaultValue={element.pattern as string | undefined} />
+        <ReservoirGeometrySection element={element} />
         <NodeResults element={element} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} />
       </>
     );
@@ -340,11 +497,10 @@ function NodeFields({
   // tank
   return (
     <>
-      <Field name="elevation" label="Elevacao" unit="m" defaultValue={numberValue(element.elevation)} />
-      <Field name="initLevel" label="Nivel inicial" unit="m" defaultValue={numberValue(element.initLevel)} />
-      <Field name="minLevel" label="Nivel minimo" unit="m" defaultValue={numberValue(element.minLevel)} />
-      <Field name="maxLevel" label="Nivel maximo" unit="m" defaultValue={numberValue(element.maxLevel)} />
-      <Field name="diameter" label="Diametro" unit="m" defaultValue={numberValue(element.diameter)} />
+      <Field name="elevation" label="Elevação da base" unit="m" defaultValue={numberValue(element.elevation)} />
+      <Field name="initLevel" label="Nível inicial" unit="m" defaultValue={numberValue(element.initLevel)} />
+      <TankGeometrySection element={element} />
+      <Field name="minVolume" label="Volume mínimo (EPANET)" unit="m³" defaultValue={numberValue(element.minVolume)} />
       <NodeResults element={element} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} />
     </>
   );

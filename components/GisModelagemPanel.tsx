@@ -121,23 +121,68 @@ function SelectedElementEditor({
   const isNode = NODE_TYPES.has(element.type);
   const [form, setForm] = useState<Record<string, string>>({});
   const [advanced, setAdvanced] = useState(false);
+  const [tankShapeMode, setTankShapeMode] = useState<'diameter' | 'area'>('diameter');
+  const [resShapeMode, setResShapeMode] = useState<'diameter' | 'area'>('diameter');
 
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
   const val = (k: string, fallback: unknown = '') => form[k] !== undefined ? form[k] : String(fallback ?? '');
 
+  const syncTankDiam = (v: string) => {
+    set('diameter', v);
+    const d = parseFloat(v.replace(',', '.'));
+    if (d > 0) set('baseArea', (Math.PI * (d / 2) ** 2).toFixed(4));
+  };
+  const syncTankArea = (v: string) => {
+    set('baseArea', v);
+    const a = parseFloat(v.replace(',', '.'));
+    if (a > 0) set('diameter', (2 * Math.sqrt(a / Math.PI)).toFixed(4));
+  };
+  const syncResDiam = (v: string) => {
+    set('resDiameter', v);
+    const d = parseFloat(v.replace(',', '.'));
+    if (d > 0) set('resBaseArea', (Math.PI * (d / 2) ** 2).toFixed(4));
+  };
+  const syncResArea = (v: string) => {
+    set('resBaseArea', v);
+    const a = parseFloat(v.replace(',', '.'));
+    if (a > 0) set('resDiameter', (2 * Math.sqrt(a / Math.PI)).toFixed(4));
+  };
+
   const handleSave = () => {
     const pn = (k: string) => { const v = parseFloat(form[k]?.replace(',', '.') ?? ''); return isNaN(v) ? undefined : v; };
     if (isNode) {
-      onSaveNode(element.id, {
-        elevation: pn('elevation'),
-        demand: pn('demand'),
-        head: pn('head'),
-        initLevel: pn('initLevel'),
-        minLevel: pn('minLevel'),
-        maxLevel: pn('maxLevel'),
-        diameter: pn('diameter'),
-        pattern: form.pattern || undefined,
-      });
+      const patch: Partial<NodeElement> = {};
+      if (element.type === 'junction') {
+        patch.elevation = pn('elevation');
+        patch.demand = pn('demand');
+        if (form.pattern) patch.pattern = form.pattern;
+        const emitter = pn('emitter'); if (emitter !== undefined) patch.emitter = emitter;
+      } else if (element.type === 'reservoir') {
+        patch.head = pn('head');
+        if (form.pattern) patch.pattern = form.pattern;
+        const elev = pn('elevation'); if (elev !== undefined) patch.elevation = elev;
+        const d = pn('resDiameter'); if (d !== undefined && d > 0) patch.diameter = d;
+        const a = pn('resBaseArea'); if (a !== undefined && a > 0) patch.baseArea = a;
+      } else if (element.type === 'tank') {
+        patch.elevation = pn('elevation');
+        patch.initLevel = pn('initLevel');
+        patch.minLevel = pn('minLevel');
+        patch.maxLevel = pn('maxLevel');
+        patch.diameter = pn('diameter');
+        const a = pn('baseArea'); if (a !== undefined && a > 0) patch.baseArea = a;
+        const mv = pn('minVolume'); if (mv !== undefined) patch.minVolume = mv;
+        if (form.pattern) patch.pattern = form.pattern;
+      } else {
+        patch.elevation = pn('elevation');
+        patch.demand = pn('demand');
+        patch.head = pn('head');
+        patch.initLevel = pn('initLevel');
+        patch.minLevel = pn('minLevel');
+        patch.maxLevel = pn('maxLevel');
+        patch.diameter = pn('diameter');
+        if (form.pattern) patch.pattern = form.pattern;
+      }
+      onSaveNode(element.id, patch);
     } else {
       const link = element as LinkElement;
       onSaveLink(element.id, {
@@ -156,6 +201,20 @@ function SelectedElementEditor({
 
   const n = element as NodeElement;
   const l = element as LinkElement;
+
+  // Volumes calculados dinamicamente a partir do form (para exibição reativa)
+  const _nExt = n as NodeElement & { baseArea?: number; minVolume?: number };
+  const tankDiam = parseFloat(form.diameter?.replace(',', '.') ?? '') || (n.diameter ?? 0);
+  const tankAreaVal = parseFloat(form.baseArea?.replace(',', '.') ?? '') || (typeof _nExt.baseArea === 'number' ? _nExt.baseArea : Math.PI * (tankDiam / 2) ** 2);
+  const tankMaxLv = parseFloat(form.maxLevel?.replace(',', '.') ?? '') || (n.maxLevel ?? 0);
+  const tankMinLv = parseFloat(form.minLevel?.replace(',', '.') ?? '') || (n.minLevel ?? 0);
+  const tankVolume = tankAreaVal * Math.max(0, tankMaxLv - tankMinLv);
+
+  const resDiam = parseFloat(form.resDiameter?.replace(',', '.') ?? '') || (n.diameter ?? 0);
+  const resAreaVal = parseFloat(form.resBaseArea?.replace(',', '.') ?? '') || (typeof _nExt.baseArea === 'number' ? _nExt.baseArea : (resDiam > 0 ? Math.PI * (resDiam / 2) ** 2 : 0));
+  const resHead = parseFloat(form.head?.replace(',', '.') ?? '') || (n.head ?? 0);
+  const resBaseElev = parseFloat(form.elevation?.replace(',', '.') ?? '') || (n.elevation ?? 0);
+  const resVolume = resAreaVal > 0 ? resAreaVal * Math.max(0, resHead - resBaseElev) : 0;
 
   const TYPE_COLORS: Record<string, string> = {
     junction: '#3b82f6', reservoir: '#6366f1', tank: '#06b6d4',
@@ -190,16 +249,41 @@ function SelectedElementEditor({
         </>}
         {element.type === 'reservoir' && <>
           <Field label="Carga / Head (m)"><input className={inputCls} type="number" step="0.1" value={val('head', n.head)} onChange={e => set('head', e.target.value)} /></Field>
+          <Field label="Elevação da base (m)"><input className={inputCls} type="number" step="0.1" value={val('elevation', n.elevation ?? '')} onChange={e => set('elevation', e.target.value)} placeholder="ref." /></Field>
           <Field label="Padrão"><input className={inputCls} value={val('pattern', n.pattern)} onChange={e => set('pattern', e.target.value)} /></Field>
+          <div className="rounded border border-zinc-800 p-2 space-y-1.5">
+            <div className="text-[9px] uppercase tracking-wider text-zinc-600">Geometria auxiliar</div>
+            <div className="flex overflow-hidden rounded border border-zinc-700">
+              <button type="button" onClick={() => setResShapeMode('diameter')} className={`flex-1 py-1 text-[10px] font-semibold ${resShapeMode === 'diameter' ? 'bg-indigo-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Diâmetro</button>
+              <button type="button" onClick={() => setResShapeMode('area')} className={`flex-1 py-1 text-[10px] font-semibold ${resShapeMode === 'area' ? 'bg-indigo-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Área base</button>
+            </div>
+            {resShapeMode === 'diameter'
+              ? <Field label="Diâmetro (m)"><input className={inputCls} type="number" step="0.01" value={val('resDiameter', n.diameter ?? '')} onChange={e => syncResDiam(e.target.value)} placeholder="—" /></Field>
+              : <Field label="Área base (m²)"><input className={inputCls} type="number" step="0.01" value={val('resBaseArea', typeof (n as NodeElement & { baseArea?: number }).baseArea === 'number' ? (n as NodeElement & { baseArea?: number }).baseArea : '')} onChange={e => syncResArea(e.target.value)} placeholder="—" /></Field>
+            }
+            {resVolume > 0 && <div className="rounded bg-indigo-900/20 px-2 py-1 text-[10px] text-indigo-300">Volume calc.: <span className="font-mono font-semibold">{resVolume.toFixed(1)} m³</span></div>}
+          </div>
         </>}
         {element.type === 'tank' && <>
-          <Field label="Elevação (m)"><input className={inputCls} type="number" step="0.1" value={val('elevation', n.elevation)} onChange={e => set('elevation', e.target.value)} /></Field>
-          <div className="grid grid-cols-3 gap-1">
-            <Field label="Nível Ini."><input className={inputCls} type="number" step="0.1" value={val('initLevel', n.initLevel)} onChange={e => set('initLevel', e.target.value)} /></Field>
-            <Field label="Nível Mín."><input className={inputCls} type="number" step="0.1" value={val('minLevel', n.minLevel)} onChange={e => set('minLevel', e.target.value)} /></Field>
-            <Field label="Nível Máx."><input className={inputCls} type="number" step="0.1" value={val('maxLevel', n.maxLevel)} onChange={e => set('maxLevel', e.target.value)} /></Field>
+          <Field label="Elevação da base (m)"><input className={inputCls} type="number" step="0.1" value={val('elevation', n.elevation)} onChange={e => set('elevation', e.target.value)} /></Field>
+          <Field label="Nível inicial (m)"><input className={inputCls} type="number" step="0.1" value={val('initLevel', n.initLevel)} onChange={e => set('initLevel', e.target.value)} /></Field>
+          <div className="rounded border border-zinc-800 p-2 space-y-1.5">
+            <div className="text-[9px] uppercase tracking-wider text-zinc-600">Geometria</div>
+            <div className="flex overflow-hidden rounded border border-zinc-700">
+              <button type="button" onClick={() => setTankShapeMode('diameter')} className={`flex-1 py-1 text-[10px] font-semibold ${tankShapeMode === 'diameter' ? 'bg-cyan-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Diâmetro</button>
+              <button type="button" onClick={() => setTankShapeMode('area')} className={`flex-1 py-1 text-[10px] font-semibold ${tankShapeMode === 'area' ? 'bg-cyan-700 text-white' : 'bg-zinc-900 text-zinc-400'}`}>Área base</button>
+            </div>
+            {tankShapeMode === 'diameter'
+              ? <Field label="Diâmetro (m)"><input className={inputCls} type="number" step="0.01" value={val('diameter', n.diameter)} onChange={e => syncTankDiam(e.target.value)} /></Field>
+              : <Field label="Área base (m²)"><input className={inputCls} type="number" step="0.01" value={val('baseArea', typeof (n as NodeElement & { baseArea?: number }).baseArea === 'number' ? (n as NodeElement & { baseArea?: number }).baseArea : (Math.PI * ((n.diameter ?? 5) / 2) ** 2).toFixed(4))} onChange={e => syncTankArea(e.target.value)} /></Field>
+            }
           </div>
-          <Field label="Diâmetro (m)"><input className={inputCls} type="number" step="0.1" value={val('diameter', n.diameter)} onChange={e => set('diameter', e.target.value)} /></Field>
+          <div className="grid grid-cols-2 gap-1">
+            <Field label="Nível Mín. (m)"><input className={inputCls} type="number" step="0.1" value={val('minLevel', n.minLevel)} onChange={e => set('minLevel', e.target.value)} /></Field>
+            <Field label="Nível Máx. (m)"><input className={inputCls} type="number" step="0.1" value={val('maxLevel', n.maxLevel)} onChange={e => set('maxLevel', e.target.value)} /></Field>
+          </div>
+          <Field label="Vol. mínimo EPANET (m³)"><input className={inputCls} type="number" step="0.1" value={val('minVolume', typeof (n as NodeElement & { minVolume?: number }).minVolume === 'number' ? (n as NodeElement & { minVolume?: number }).minVolume : '')} onChange={e => set('minVolume', e.target.value)} placeholder="0" /></Field>
+          {tankVolume > 0 && <div className="rounded bg-cyan-900/20 px-2 py-1.5 text-[10px] text-cyan-300">Volume útil calc.: <span className="font-mono font-semibold text-sm">{tankVolume.toFixed(1)} m³</span></div>}
         </>}
         {element.type === 'pipe' && <>
           <div className="grid grid-cols-2 gap-1">
@@ -358,8 +442,17 @@ function CreateElementForm({
       const offset = { x: (coords?.x ?? 0) + 10, y: (coords?.y ?? 0) + 10 };
 
       if (kind === 'junction') onAddNode({ id: eid, type: 'junction', elevation: num('elevation', 0), demand: num('demand', 0), pattern: fields.pattern || undefined, coordinates: offset });
-      if (kind === 'reservoir') onAddNode({ id: eid, type: 'reservoir', head: num('head', 100), pattern: fields.pattern || undefined, coordinates: offset });
-      if (kind === 'tank') onAddNode({ id: eid, type: 'tank', elevation: num('elevation', 0), initLevel: num('initLevel', 1), minLevel: num('minLevel', 0), maxLevel: num('maxLevel', 5), diameter: num('diameter', 10), coordinates: offset });
+      if (kind === 'reservoir') {
+        const resNode: NodeElement = { id: eid, type: 'reservoir', head: num('head', 100), pattern: fields.pattern || undefined, coordinates: offset };
+        const resElev = num('elevation'); if (resElev) resNode.elevation = resElev;
+        onAddNode(resNode);
+      }
+      if (kind === 'tank') {
+        const d = num('diameter', 10);
+        const tankNode: NodeElement = { id: eid, type: 'tank', elevation: num('elevation', 0), initLevel: num('initLevel', 1), minLevel: num('minLevel', 0), maxLevel: num('maxLevel', 5), diameter: d, coordinates: offset };
+        tankNode.baseArea = Math.PI * (d / 2) ** 2;
+        onAddNode(tankNode);
+      }
     }
 
     setId('');
@@ -410,15 +503,17 @@ function CreateElementForm({
       </>}
       {kind === 'reservoir' && <>
         <Field label="Carga / Head (m)"><input className={inputCls} type="number" value={fields.head ?? ''} onChange={e => set('head', e.target.value)} placeholder="100" /></Field>
+        <Field label="Elevação da base (m)"><input className={inputCls} type="number" value={fields.elevation ?? ''} onChange={e => set('elevation', e.target.value)} placeholder="ref." /></Field>
       </>}
       {kind === 'tank' && <>
-        <Field label="Elevação (m)"><input className={inputCls} type="number" value={fields.elevation ?? ''} onChange={e => set('elevation', e.target.value)} placeholder="0" /></Field>
-        <div className="grid grid-cols-3 gap-1">
-          <Field label="Ini. (m)"><input className={inputCls} type="number" value={fields.initLevel ?? ''} onChange={e => set('initLevel', e.target.value)} placeholder="1" /></Field>
-          <Field label="Mín. (m)"><input className={inputCls} type="number" value={fields.minLevel ?? ''} onChange={e => set('minLevel', e.target.value)} placeholder="0" /></Field>
-          <Field label="Máx. (m)"><input className={inputCls} type="number" value={fields.maxLevel ?? ''} onChange={e => set('maxLevel', e.target.value)} placeholder="5" /></Field>
+        <Field label="Elevação da base (m)"><input className={inputCls} type="number" value={fields.elevation ?? ''} onChange={e => set('elevation', e.target.value)} placeholder="0" /></Field>
+        <Field label="Nível inicial (m)"><input className={inputCls} type="number" value={fields.initLevel ?? ''} onChange={e => set('initLevel', e.target.value)} placeholder="1" /></Field>
+        <div className="grid grid-cols-2 gap-1">
+          <Field label="Nível Mín. (m)"><input className={inputCls} type="number" value={fields.minLevel ?? ''} onChange={e => set('minLevel', e.target.value)} placeholder="0" /></Field>
+          <Field label="Nível Máx. (m)"><input className={inputCls} type="number" value={fields.maxLevel ?? ''} onChange={e => set('maxLevel', e.target.value)} placeholder="5" /></Field>
         </div>
         <Field label="Diâmetro (m)"><input className={inputCls} type="number" value={fields.diameter ?? ''} onChange={e => set('diameter', e.target.value)} placeholder="10" /></Field>
+        {num('diameter') > 0 && <div className="rounded bg-cyan-900/20 px-2 py-1 text-[10px] text-cyan-300">Área: {(Math.PI * (num('diameter') / 2) ** 2).toFixed(2)} m² · Vol. útil: {(Math.PI * (num('diameter') / 2) ** 2 * Math.max(0, num('maxLevel', 5) - num('minLevel', 0))).toFixed(1)} m³</div>}
       </>}
       {(kind === 'pipe' || kind === 'pump' || kind === 'valve') && <>
         <div className="grid grid-cols-2 gap-1">

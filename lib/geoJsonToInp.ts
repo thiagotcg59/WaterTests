@@ -63,8 +63,8 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
             NUMBER(n.minLevel),
             NUMBER(n.maxLevel),
             Math.max(0.1, NUMBER(n.diameter, 1)),
-            0,
-            '',
+            NUMBER(n.minVolume as number | undefined),
+            (n.volumeCurve as string | undefined) ?? '',
           ].join('\t').trimEnd()
         );
       }
