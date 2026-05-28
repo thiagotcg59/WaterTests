@@ -26,6 +26,9 @@ interface HydraulicMapProps {
   onNodeMoved?: (id: string, lng: number, lat: number) => void;
   onNodeAdded?: (lng: number, lat: number) => void;
   onNodeAddedGetId?: (lng: number, lat: number) => string;
+  /** Disparado quando o usuário cria uma junção clicando sobre um trecho existente.
+   *  O trecho será dividido em dois e a junção inserida no ponto de snap. */
+  onNodeInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
   onPipeAdded?: (sourceId: string, targetId: string) => void;
   onPumpAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
@@ -175,7 +178,7 @@ const PIPE_VERTEX_HIT_RADIUS_PX = 10;
 
 export default function HydraulicMap({
   data, onElementClick,
-  onNodeMoved, onNodeAdded, onNodeAddedGetId, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onElementContextMenu, onSectorCreated, onSectorGeometryUpdated, onLassoSelect,
+  onNodeMoved, onNodeAdded, onNodeAddedGetId, onNodeInsertedOnPipe, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onElementContextMenu, onSectorCreated, onSectorGeometryUpdated, onLassoSelect,
   nodeColorMode = 'type', linkColorMode = 'type',
   selectedId, highlightIds, highlightColor, sectors, showSectorPolygons,
   smartSensorRecommendations = [], smartInstalledSensors = [], selectedSmartSensorId = null, onAddSmartSensor, onSmartSensorClick,
@@ -1376,6 +1379,14 @@ export default function HydraulicMap({
             return;
           }
         }
+        // Junção criada sobre um trecho existente → divide o trecho e insere a junção
+        if (targetKind === 'junction' && onNodeInsertedOnPipe) {
+          const snap = findPipeSnapAt(m, e);
+          if (snap) {
+            onNodeInsertedOnPipe(snap.linkId, snap.lng, snap.lat);
+            return;
+          }
+        }
         onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
         return;
       }
@@ -1831,7 +1842,7 @@ export default function HydraulicMap({
     };
   }, [
     editMode, mapReady, data,
-    geo, onElementClick, onNodeMoved, onNodeAdded, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
+    geo, onElementClick, onNodeMoved, onNodeAdded, onNodeInsertedOnPipe, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
     showSectorPolygons, onSectorGeometryUpdated,
     pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, findPipeVertexAt,
     onAddSmartSensor, onSmartSensorClick,

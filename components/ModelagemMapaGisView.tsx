@@ -32,6 +32,7 @@ interface Props {
   onNodeMoved?: (id: string, lng: number, lat: number) => void;
   onNodeAdded?: (lng: number, lat: number) => void;
   onNodeAddedGetId?: (lng: number, lat: number) => string;
+  onNodeInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
   onPipeAdded?: (sourceId: string, targetId: string) => void;
   onPumpAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
@@ -83,6 +84,7 @@ export default function ModelagemMapaGisView({
   onNodeMoved,
   onNodeAdded,
   onNodeAddedGetId,
+  onNodeInsertedOnPipe,
   onPipeAdded,
   onPumpAdded,
   onPipeConnectedToLink,
@@ -132,6 +134,7 @@ export default function ModelagemMapaGisView({
           onNodeMoved={onNodeMoved}
           onNodeAdded={onNodeAdded}
           onNodeAddedGetId={onNodeAddedGetId}
+          onNodeInsertedOnPipe={onNodeInsertedOnPipe}
           onPipeAdded={onPipeAdded}
           onPumpAdded={onPumpAdded}
           onPipeConnectedToLink={onPipeConnectedToLink}

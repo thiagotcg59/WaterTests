@@ -1485,6 +1485,71 @@ export default function Home() {
 
   // Cria um nó na posição clicada e retorna o ID gerado.
   // Usado pelo modo addPipe para criar automaticamente o nó de destino.
+  const handleNodeInsertedOnPipe = (linkId: string, lng: number, lat: number) => {
+    if (!networkData) return;
+    updateNetwork((data) => {
+      const link = data.links[linkId];
+      if (!link || link.type !== 'pipe') return data;
+      const node1 = data.nodes[link.node1];
+      const node2 = data.nodes[link.node2];
+      if (!node1?.coordinates || !node2?.coordinates) return data;
+
+      const [x, y] = networkToGeoJson(data, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
+
+      // Projeta o clique sobre o segmento node1→node2
+      const ax = node1.coordinates.x, ay = node1.coordinates.y;
+      const bx = node2.coordinates.x, by = node2.coordinates.y;
+      const abx = bx - ax, aby = by - ay;
+      const ab2 = abx * abx + aby * aby;
+      if (ab2 <= 1e-9) return data;
+
+      const apx = x - ax, apy = y - ay;
+      const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / ab2));
+
+      // Evita criar trechos de comprimento quase zero nas extremidades
+      const EDGE_TOLERANCE = 0.02;
+      if (t <= EDGE_TOLERANCE || t >= 1 - EDGE_TOLERANCE) return data;
+
+      const snapX = ax + abx * t;
+      const snapY = ay + aby * t;
+
+      // Cria a junção no ponto de snap, usando draft pendente se disponível
+      const newNodeId = nextId('J', data.nodes);
+      let newNode: NodeElement;
+      if (pendingHydraulicDraft && isNodeDraft(pendingHydraulicDraft) && pendingHydraulicDraft.kind === 'junction') {
+        newNode = buildNodeFromDraft(pendingHydraulicDraft, { x: snapX, y: snapY });
+        newNode.id = newNodeId; // garante id único gerado pelo sistema
+      } else {
+        newNode = { id: newNodeId, type: 'junction', elevation: 0, demand: 0, coordinates: { x: snapX, y: snapY } };
+      }
+
+      // Divide o trecho preservando diâmetro, rugosidade e demais atributos.
+      // Comprimento proporcional ao parâmetro t ao longo do segmento reto.
+      const origLength = typeof link.length === 'number' && link.length > 0 ? link.length : 100;
+
+      const linksWithout = { ...data.links };
+      delete linksWithout[linkId];
+
+      const firstId = nextId('P', linksWithout);
+      const linksWithFirst = {
+        ...linksWithout,
+        [firstId]: { ...link, id: firstId, node1: link.node1, node2: newNodeId, length: origLength * t },
+      };
+
+      const secondId = nextId('P', linksWithFirst);
+      const linksWithSplits = {
+        ...linksWithFirst,
+        [secondId]: { ...link, id: secondId, node1: newNodeId, node2: link.node2, length: origLength * (1 - t) },
+      };
+
+      return {
+        ...data,
+        nodes: { ...data.nodes, [newNodeId]: newNode },
+        links: linksWithSplits,
+      };
+    });
+  };
+
   const handleNodeAddedGetId = (lng: number, lat: number): string => {
     if (!networkData) return '';
     const [x, y] = networkToGeoJson(networkData, geoAnchor, { frozenCenter: geoCenter }).transform.toEpanet(lng, lat);
@@ -3157,6 +3222,7 @@ export default function Home() {
                         onNodeMoved={handleNodeMoved}
                         onNodeAdded={handleNodeAdded}
                         onNodeAddedGetId={handleNodeAddedGetId}
+                        onNodeInsertedOnPipe={handleNodeInsertedOnPipe}
                         onPipeAdded={handlePipeAdded}
                         onPumpAdded={handlePumpAdded}
                         onPipeConnectedToLink={handlePipeConnectedToLink}
@@ -3352,6 +3418,7 @@ export default function Home() {
                           onNodeMoved={handleNodeMoved}
                           onNodeAdded={handleNodeAdded}
                           onNodeAddedGetId={handleNodeAddedGetId}
+                          onNodeInsertedOnPipe={handleNodeInsertedOnPipe}
                           onPipeAdded={handlePipeAdded}
                           onPumpAdded={handlePumpAdded}
                           onPipeConnectedToLink={handlePipeConnectedToLink}
