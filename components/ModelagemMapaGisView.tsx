@@ -26,10 +26,14 @@ interface Props {
   // Callbacks do mapa
   onElementClick: (element: NodeElement | LinkElement) => void;
   onValveInsertedOnPipe: (linkId: string, lng: number, lat: number) => void;
+  // Configuração de bomba (controlada pelo painel de modelagem)
+  pumpPower: number;
+  setPumpPower: (v: number) => void;
   onNodeMoved?: (id: string, lng: number, lat: number) => void;
   onNodeAdded?: (lng: number, lat: number) => void;
   onNodeAddedGetId?: (lng: number, lat: number) => string;
   onPipeAdded?: (sourceId: string, targetId: string) => void;
+  onPumpAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
   onElementDeleted?: (id: string, kind: 'node' | 'link') => void;
   // Callbacks do painel de modelagem
@@ -80,7 +84,10 @@ export default function ModelagemMapaGisView({
   onNodeAdded,
   onNodeAddedGetId,
   onPipeAdded,
+  onPumpAdded,
   onPipeConnectedToLink,
+  pumpPower,
+  setPumpPower,
   onElementDeleted,
   onSaveNode,
   onSaveLink,
@@ -126,6 +133,7 @@ export default function ModelagemMapaGisView({
           onNodeAdded={onNodeAdded}
           onNodeAddedGetId={onNodeAddedGetId}
           onPipeAdded={onPipeAdded}
+          onPumpAdded={onPumpAdded}
           onPipeConnectedToLink={onPipeConnectedToLink}
           onElementDeleted={onElementDeleted}
           onValveInsertedOnPipe={onValveInsertedOnPipe}
@@ -178,6 +186,8 @@ export default function ModelagemMapaGisView({
         setValveSetting={setValveSetting}
         valveDiameter={valveDiameter}
         setValveDiameter={setValveDiameter}
+        pumpPower={pumpPower}
+        setPumpPower={setPumpPower}
       />
     </div>
   );

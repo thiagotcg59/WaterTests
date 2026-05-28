@@ -1,4 +1,4 @@
-import { NetworkData, NodeElement, LinkElement } from '../types/epanet';
+import { NetworkData, NodeElement, LinkElement, PumpCurve } from '../types/epanet';
 
 function decodeBase64Utf8(payload: string): string | null {
   try {
@@ -26,6 +26,7 @@ export function parseInpFile(fileContent: string): NetworkData {
 
   const nodes: Record<string, NodeElement> = {};
   const links: Record<string, LinkElement> = {};
+  const curves: Record<string, PumpCurve> = {};
   // Lê a opção `Units` da seção [OPTIONS] do INP. Importante para
   // preservar a interpretação dos números numéricos (Demand, Head, etc.)
   // ao regenerar o arquivo. Sem isso, demandas em CMH virariam LPS.
@@ -236,6 +237,16 @@ export function parseInpFile(fileContent: string): NetworkData {
           }
         }
         break;
+      case 'CURVES':
+        if (tokens.length >= 3) {
+          const cx = parseFloat(tokens[1]);
+          const cy = parseFloat(tokens[2]);
+          if (Number.isFinite(cx) && Number.isFinite(cy)) {
+            if (!curves[id]) curves[id] = { id, points: [] };
+            curves[id].points.push({ x: cx, y: cy });
+          }
+        }
+        break;
       case 'CONTROLS':
         controlLines.push(line);
         break;
@@ -351,6 +362,7 @@ export function parseInpFile(fileContent: string): NetworkData {
     nodes,
     links,
     flowUnits,
+    curves: Object.keys(curves).length > 0 ? curves : undefined,
     hydraulicControls: finalControls,
     sectors: metadata.sectors ?? sectors,
     customerMeters: metadata.customerMeters ?? customerMeters,

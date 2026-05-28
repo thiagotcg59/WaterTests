@@ -35,6 +35,9 @@ interface Props {
   setValveSetting?: (v: number) => void;
   valveDiameter?: number;
   setValveDiameter?: (v: number) => void;
+  // Configuração de bomba (usada no modo addPump)
+  pumpPower?: number;
+  setPumpPower?: (v: number) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,10 +45,11 @@ interface Props {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MODE_INFO: Partial<Record<EditMode, { label: string; hint: string; color: string }>> = {
-  select:      { label: 'Seleção',          hint: 'Clique em qualquer elemento para selecioná-lo.',             color: 'text-zinc-300' },
-  move:        { label: 'Mover Nó',         hint: 'Arraste um nó para reposicioná-lo no mapa.',                 color: 'text-cyan-300' },
-  addNode:     { label: 'Inserir Nó',       hint: 'Clique em qualquer ponto do mapa para adicionar o elemento.', color: 'text-blue-300' },
-  addPipe:     { label: 'Desenhar Tubo',    hint: 'Clique no nó de origem e depois no nó de destino.',           color: 'text-zinc-200' },
+  select:      { label: 'Seleção',          hint: 'Clique em qualquer elemento para selecioná-lo.',              color: 'text-zinc-300' },
+  move:        { label: 'Mover Nó',         hint: 'Arraste um nó para reposicioná-lo no mapa.',                  color: 'text-cyan-300' },
+  addNode:     { label: 'Inserir Nó',       hint: 'Clique em qualquer ponto do mapa para adicionar o elemento.',  color: 'text-blue-300' },
+  addPipe:     { label: 'Desenhar Tubo',    hint: 'Clique no nó de origem e depois no nó de destino.',            color: 'text-zinc-200' },
+  addPump:     { label: 'Inserir Bomba',    hint: 'Clique no nó de sucção e depois no nó de recalque.',           color: 'text-green-300' },
   addValve:    { label: 'Inserir Válvula',  hint: 'Clique próximo a um tubo existente para inserir a válvula.',   color: 'text-orange-300' },
   delete:      { label: 'Excluir',          hint: 'Clique em um elemento para excluí-lo permanentemente.',        color: 'text-red-300' },
 };
@@ -217,7 +221,7 @@ function SelectedElementEditor({
           </Field>
         </>}
         {element.type === 'pump' && <>
-          <Field label="Parâmetros"><input className={inputCls} value={val('parameters', l.parameters)} onChange={e => set('parameters', e.target.value)} placeholder="HEAD 30" /></Field>
+          <Field label="Parâmetros (POWER kW ou HEAD curva)"><input className={inputCls} value={val('parameters', l.parameters)} onChange={e => set('parameters', e.target.value)} placeholder="POWER 10" /></Field>
           <Field label="Status">
             <select className={selectCls} value={val('status', l.status ?? 'OPEN')} onChange={e => set('status', e.target.value)}>
               <option value="OPEN">Ligada</option><option value="CLOSED">Desligada</option>
@@ -340,7 +344,7 @@ function CreateElementForm({
         minorLoss: num('minorLoss', 0),
         status: fields.status || 'OPEN',
       });
-      if (kind === 'pump') onAddLink({ ...base, parameters: fields.parameters || 'HEAD 10', status: fields.status || 'OPEN' });
+      if (kind === 'pump') onAddLink({ ...base, parameters: fields.parameters || 'POWER 10', status: fields.status || 'OPEN' });
       if (kind === 'valve') onAddLink({
         ...base,
         diameter: num('diameter', 100),
@@ -450,7 +454,7 @@ function CreateElementForm({
         </Field>
       </>}
       {kind === 'pump' && (
-        <Field label="Curva / Parâmetros"><input className={inputCls} value={fields.parameters ?? ''} onChange={e => set('parameters', e.target.value)} placeholder="HEAD 30" /></Field>
+        <Field label="Potência (kW)"><input className={inputCls} type="number" step="1" min="0.1" value={fields.parameters ? fields.parameters.replace('POWER ', '') : ''} onChange={e => set('parameters', `POWER ${e.target.value}`)} placeholder="10" /></Field>
       )}
       {kind === 'valve' && <>
         <div className="grid grid-cols-2 gap-1">
@@ -490,6 +494,7 @@ export default function GisModelagemPanel({
   data, editMode, activeNodeKind, selectedElement,
   onEditModeChange, onSaveNode, onSaveLink, onElementDeleted, onAddNode, onAddLink, onClose,
   valveType, setValveType, valveSetting, setValveSetting, valveDiameter, setValveDiameter,
+  pumpPower, setPumpPower,
 }: Props) {
   const [section, setSection] = useState<'create' | 'form'>('create');
 
@@ -541,7 +546,7 @@ export default function GisModelagemPanel({
     { mode: 'addNode',  nodeKind: 'tank',      icon: Square,   label: 'Tanque',    color: '#06b6d4' },
     { mode: 'addPipe',  icon: Minus,  label: 'Tubo',    color: '#94a3b8' },
     { mode: 'addValve', icon: Disc,   label: 'Válvula', color: '#f97316' },
-    { mode: 'addPipe',  icon: Zap,    label: 'Bomba ↗', color: '#22c55e' }, // visual shortcut
+    { mode: 'addPump',  icon: Zap,    label: 'Bomba',   color: '#22c55e' },
   ];
 
   return (
@@ -599,6 +604,32 @@ export default function GisModelagemPanel({
                       {nk.label}
                     </button>
                   ))}
+                </div>
+              )}
+
+              {/* Configuração de bomba (visível apenas no modo addPump) */}
+              {editMode === 'addPump' && setPumpPower && (
+                <div className="mt-2 space-y-2">
+                  <div>
+                    <label className="text-[9px] uppercase tracking-wider text-zinc-500 font-bold block mb-1">Potência da bomba (kW)</label>
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="1"
+                      value={pumpPower ?? 10}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value.replace(',', '.'));
+                        if (Number.isFinite(v) && v > 0) setPumpPower(v);
+                      }}
+                      className="w-full rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-100 outline-none focus:border-green-500"
+                    />
+                    <p className="text-[10px] text-zinc-500 leading-snug mt-1">
+                      Gera <code className="text-green-400">POWER {pumpPower ?? 10}</code> no INP — bomba de potência constante, sem curva necessária.
+                    </p>
+                  </div>
+                  <p className="text-[10px] text-green-300/80 leading-snug">
+                    Clique no nó de <b>sucção</b> e depois no nó de <b>recalque</b> para inserir a bomba.
+                  </p>
                 </div>
               )}
 
@@ -715,8 +746,8 @@ export default function GisModelagemPanel({
               <li className="flex items-start gap-1.5"><span style={{ color: '#3b82f6' }}>●</span> <b className="text-zinc-300">Junção / Reservatório / Tanque:</b> ative a ferramenta, selecione o tipo e clique no mapa.</li>
               <li className="flex items-start gap-1.5"><span style={{ color: '#94a3b8' }}>─</span> <b className="text-zinc-300">Tubo:</b> clique no nó de origem, depois no destino. O trecho é criado automaticamente.</li>
               <li className="flex items-start gap-1.5"><span style={{ color: '#f97316' }}>⊕</span> <b className="text-zinc-300">Válvula:</b> clique próximo a um tubo existente para inseri-la por split.</li>
+              <li className="flex items-start gap-1.5"><span style={{ color: '#22c55e' }}>⚡</span> <b className="text-zinc-300">Bomba:</b> ative a ferramenta, configure a potência (kW) e clique no nó de sucção e depois no de recalque.</li>
             </ul>
-            <p className="text-zinc-600">Para adicionar <b className="text-zinc-400">Bombas</b>, use "Criar via Formulário" selecionando dois nós.</p>
           </div>
         )}
 

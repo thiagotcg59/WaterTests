@@ -70,6 +70,17 @@ export interface TimeSeriesData {
 //   SI: LPS, LPM, MLD, CMH, CMD
 export type FlowUnits = 'CFS' | 'GPM' | 'MGD' | 'IMGD' | 'AFD' | 'LPS' | 'LPM' | 'MLD' | 'CMH' | 'CMD';
 
+export interface CurvePoint {
+  x: number; // vazão (Q)
+  y: number; // altura manométrica (H)
+}
+
+export interface PumpCurve {
+  id: string;
+  points: CurvePoint[];
+  description?: string;
+}
+
 export interface NetworkData {
   nodes: Record<string, NodeElement>;
   links: Record<string, LinkElement>;
@@ -91,6 +102,7 @@ export interface NetworkData {
    * volte para o mesmo lugar do mapa onde foi editada — sem isso, o
    * cx/cy é recalculado a cada sessão e a rede aparece em outro local.
    */
+  curves?: Record<string, PumpCurve>;
   geoTransform?: {
     mode?: 'wgs84' | 'utm-south' | 'local-meters';
     anchor?: { lat: number; lng: number; label?: string };

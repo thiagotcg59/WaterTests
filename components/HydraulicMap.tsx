@@ -14,7 +14,7 @@ import {
 import { NodeColorMode, LinkColorMode, PRESSURE_RANGES, ELEVATION_RANGES } from '../lib/colorScales';
 import {
   Layers as LayersIcon, Move, MousePointer2, PlusCircle, Spline, Trash2,
-  MapPin, Sun, Moon, Globe2, Square, LassoSelect, Target, SlidersHorizontal,
+  MapPin, Sun, Moon, Globe2, Square, LassoSelect, Target, SlidersHorizontal, Zap,
 } from 'lucide-react';
 import { polygon as turfPolygon } from '@turf/helpers';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
@@ -27,6 +27,7 @@ interface HydraulicMapProps {
   onNodeAdded?: (lng: number, lat: number) => void;
   onNodeAddedGetId?: (lng: number, lat: number) => string;
   onPipeAdded?: (sourceId: string, targetId: string) => void;
+  onPumpAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
   onValveInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
   onElementDeleted?: (id: string, kind: 'node' | 'link') => void;
@@ -174,7 +175,7 @@ const PIPE_VERTEX_HIT_RADIUS_PX = 10;
 
 export default function HydraulicMap({
   data, onElementClick,
-  onNodeMoved, onNodeAdded, onNodeAddedGetId, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onElementContextMenu, onSectorCreated, onSectorGeometryUpdated, onLassoSelect,
+  onNodeMoved, onNodeAdded, onNodeAddedGetId, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted, onElementContextMenu, onSectorCreated, onSectorGeometryUpdated, onLassoSelect,
   nodeColorMode = 'type', linkColorMode = 'type',
   selectedId, highlightIds, highlightColor, sectors, showSectorPolygons,
   smartSensorRecommendations = [], smartInstalledSensors = [], selectedSmartSensorId = null, onAddSmartSensor, onSmartSensorClick,
@@ -1379,54 +1380,56 @@ export default function HydraulicMap({
         return;
       }
 
-      // Modo adicionar tubo
-      if (editMode === 'addPipe') {
+      // Modo adicionar tubo ou bomba
+      if (editMode === 'addPipe' || editMode === 'addPump') {
         // Ctrl/Meta + clique sobre um tubo existente => adiciona vértice
-        // de curvatura puramente geométrico (não cria junction).
-        const ctrl = !!(e.originalEvent as MouseEvent | undefined)?.ctrlKey
-          || !!(e.originalEvent as MouseEvent | undefined)?.metaKey;
-        if (ctrl && onPipeVertexAdded) {
-          const snap = findPipeSnapAt(m, e);
-          if (snap) {
-            onPipeVertexAdded(snap.linkId, snap.lng, snap.lat);
+        // de curvatura (apenas no modo addPipe; addPump não usa vértices).
+        if (editMode === 'addPipe') {
+          const ctrl = !!(e.originalEvent as MouseEvent | undefined)?.ctrlKey
+            || !!(e.originalEvent as MouseEvent | undefined)?.metaKey;
+          if (ctrl && onPipeVertexAdded) {
+            const snap = findPipeSnapAt(m, e);
+            if (snap) {
+              onPipeVertexAdded(snap.linkId, snap.lng, snap.lat);
+              return;
+            }
             return;
           }
-          // Sem tubo próximo: ignora o clique (não cria junction acidental).
-          return;
         }
 
         const nodeId = findNodeIdAt(m, e);
 
         if (!pendingFirstNode) {
           if (nodeId) {
-            // Clicou num nó existente → define como ponto de origem
             setPendingFirstNode(nodeId);
-          } else if (onNodeAddedGetId) {
-            // Clicou em espaço vazio → cria nó e define como origem
+          } else if (editMode === 'addPipe' && onNodeAddedGetId) {
             const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
             if (newId) setPendingFirstNode(newId);
           }
         } else {
           if (nodeId && pendingFirstNode !== nodeId) {
-            // Clicou num nó existente diferente → fecha o tubo
-            onPipeAdded?.(pendingFirstNode, nodeId);
+            if (editMode === 'addPump') {
+              onPumpAdded?.(pendingFirstNode, nodeId);
+            } else {
+              onPipeAdded?.(pendingFirstNode, nodeId);
+            }
             setPendingFirstNode(null);
             return;
           }
           if (!nodeId) {
-            const snap = findPipeSnapAt(m, e);
-            if (snap) {
-              // Clicou perto de um tubo → conecta ao ponto do tubo
-              onPipeConnectedToLink?.(pendingFirstNode, snap.linkId, snap.lng, snap.lat);
-              setPendingFirstNode(null);
-              return;
-            }
-            if (onNodeAddedGetId) {
-              // Clicou em espaço vazio → cria nó de destino e fecha o tubo
-              const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
-              if (newId) {
-                onPipeAdded?.(pendingFirstNode, newId);
+            if (editMode === 'addPipe') {
+              const snap = findPipeSnapAt(m, e);
+              if (snap) {
+                onPipeConnectedToLink?.(pendingFirstNode, snap.linkId, snap.lng, snap.lat);
                 setPendingFirstNode(null);
+                return;
+              }
+              if (onNodeAddedGetId) {
+                const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
+                if (newId) {
+                  onPipeAdded?.(pendingFirstNode, newId);
+                  setPendingFirstNode(null);
+                }
               }
             }
           }
@@ -1828,7 +1831,7 @@ export default function HydraulicMap({
     };
   }, [
     editMode, mapReady, data,
-    geo, onElementClick, onNodeMoved, onNodeAdded, onPipeAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
+    geo, onElementClick, onNodeMoved, onNodeAdded, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
     showSectorPolygons, onSectorGeometryUpdated,
     pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, findPipeVertexAt,
     onAddSmartSensor, onSmartSensorClick,
@@ -2137,6 +2140,7 @@ function Toolbar({
         <Btn mode="move" icon={Move} label="Mover nó" />
         <Btn mode="addNode" icon={PlusCircle} label="Novo nó" />
         <Btn mode="addPipe" icon={Spline} label="Novo tubo" />
+        <Btn mode="addPump" icon={Zap} label="Bomba" />
         <Btn mode="addValve" icon={SlidersHorizontal} label="Inserir válvula" />
         <Btn mode="inspectCoord" icon={Target} label="Inspecionar X,Y" />
 
@@ -2152,6 +2156,13 @@ function Toolbar({
           <div className="text-amber-100/70">
             <span className="font-mono px-1 rounded bg-amber-500/20">Ctrl + clique</span> sobre um tubo: adiciona vértice de curvatura (sem criar nó hidráulico).
           </div>
+        </div>
+      )}
+      {editMode === 'addPump' && (
+        <div className="text-[11px] bg-green-500/15 text-green-200 border border-green-500/40 rounded-md px-2 py-1">
+          {pendingFirstNode
+            ? `Clique no nó de destino (origem: ${pendingFirstNode})`
+            : 'Clique no nó de origem da bomba'}
         </div>
       )}
       {editMode === 'addValve' && (

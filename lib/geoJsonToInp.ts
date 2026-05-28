@@ -17,6 +17,7 @@ type SectionKey =
   | 'PIPES' | 'PUMPS' | 'VALVES'
   | 'COORDINATES' | 'VERTICES'
   | 'STATUS' | 'CONTROLS'
+  | 'CURVES'
   | 'CUSTOMER_METERS'
   | 'CUSTOMER_METER_PRESSURES';
 
@@ -72,16 +73,18 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
       out.push(';ID\tNode1\tNode2\tLength\tDiameter\tRoughness\tMinorLoss\tStatus');
       for (const l of Object.values(data.links)) {
         if (l.type !== 'pipe') continue;
-        
-        let calculatedLength = NUMBER(l.length);
-        const n1 = data.nodes[l.node1];
-        const n2 = data.nodes[l.node2];
-        
-        // Se ambos os nós têm coordenadas, calcula a distância real em escala
-        if (n1?.coordinates && n2?.coordinates) {
-          const dx = n2.coordinates.x - n1.coordinates.x;
-          const dy = n2.coordinates.y - n1.coordinates.y;
-          calculatedLength = Math.sqrt(dx * dx + dy * dy);
+
+        // Usa o comprimento armazenado (calculado pelo syncLinkLengths via haversine)
+        // como primeira opção; cai no cálculo de distância euclidiana como fallback.
+        let pipeLength = NUMBER(l.length);
+        if (!(pipeLength > 0)) {
+          const n1 = data.nodes[l.node1];
+          const n2 = data.nodes[l.node2];
+          if (n1?.coordinates && n2?.coordinates) {
+            const dx = n2.coordinates.x - n1.coordinates.x;
+            const dy = n2.coordinates.y - n1.coordinates.y;
+            pipeLength = Math.sqrt(dx * dx + dy * dy);
+          }
         }
 
         out.push(
@@ -89,7 +92,7 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
             quote(l.id),
             quote(l.node1),
             quote(l.node2),
-            Math.max(0.1, calculatedLength).toFixed(2),
+            Math.max(0.1, pipeLength).toFixed(2),
             Math.max(1, NUMBER(l.diameter, 100)),
             NUMBER(l.roughness, 130),
             NUMBER(l.minorLoss),
@@ -102,7 +105,7 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
       out.push(';ID\tNode1\tNode2\tParameters');
       for (const l of Object.values(data.links)) {
         if (l.type !== 'pump') continue;
-        out.push([quote(l.id), quote(l.node1), quote(l.node2), l.parameters || ''].join('\t').trimEnd());
+        out.push([quote(l.id), quote(l.node1), quote(l.node2), l.parameters || 'POWER 10'].join('\t').trimEnd());
       }
       return out;
     case 'VALVES':
@@ -145,15 +148,25 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
     case 'STATUS':
       // Regenerada a partir dos links atuais — garante que entradas
       // órfãs (links já removidos) não causem Error 204 do EPANET.
-      // Status default ("Open") fica implícito: só emitimos as
-      // exceções (CLOSED ou setting numérico para válvulas).
+      // Para tubos/bombas, OPEN é o default e pode ser omitido.
+      // Para válvulas, OPEN (bypass) tem significado especial e deve ser
+      // emitido explicitamente para preservar o comportamento original.
       out.push(';ID\tStatus/Setting');
       for (const l of Object.values(data.links)) {
         const raw = typeof l.status === 'string' ? l.status.trim() : '';
         if (!raw) continue;
         const upper = raw.toUpperCase();
-        if (upper === 'OPEN' || upper === '') continue;
-        out.push([quote(l.id), upper === 'CLOSED' ? 'CLOSED' : raw].join('\t'));
+        if (upper === '') continue;
+        if (upper === 'OPEN' && l.type !== 'valve') continue;
+        out.push([quote(l.id), upper === 'CLOSED' ? 'CLOSED' : upper === 'OPEN' ? 'OPEN' : raw].join('\t'));
+      }
+      return out;
+    case 'CURVES':
+      out.push(';ID\tX-Value\tY-Value');
+      for (const curve of Object.values(data.curves ?? {})) {
+        for (const pt of curve.points) {
+          out.push([quote(curve.id), pt.x, pt.y].join('\t'));
+        }
       }
       return out;
     case 'CONTROLS':
@@ -215,13 +228,24 @@ function buildSection(section: SectionKey, data: NetworkData): string[] {
   }
 }
 
-const ALL_SECTIONS: SectionKey[] = [
+const BASE_SECTIONS: SectionKey[] = [
   'JUNCTIONS', 'RESERVOIRS', 'TANKS',
   'PIPES', 'PUMPS', 'VALVES', 'COORDINATES', 'VERTICES',
   'STATUS', 'CONTROLS',
   'CUSTOMER_METERS',
   'CUSTOMER_METER_PRESSURES',
 ];
+
+// CURVES é incluído apenas quando há curvas definidas no dashboard.
+// Do contrário, a seção [CURVES] original do INP é preservada
+// intacta — evita Error 200 quando bombas referenciam curvas existentes.
+function activeSections(data: NetworkData): SectionKey[] {
+  const hasCurves = data.curves && Object.keys(data.curves).length > 0;
+  if (!hasCurves) return BASE_SECTIONS;
+  const sections = [...BASE_SECTIONS];
+  sections.splice(sections.indexOf('CONTROLS') + 1, 0, 'CURVES');
+  return sections;
+}
 
 function stripMetadataLines(inp: string): string {
   return inp
@@ -296,7 +320,7 @@ function patchInpSections(inp: string, data: NetworkData): string {
       // Encerra qualquer skip ativo
       skippingSection = null;
 
-      if (ALL_SECTIONS.includes(sec)) {
+      if (activeSections(data).includes(sec)) {
         // Substitui essa seção pela versão regenerada
         seen.add(sec);
         result.push(`[${sec}]`);
@@ -315,7 +339,7 @@ function patchInpSections(inp: string, data: NetworkData): string {
   }
 
   // Para seções que não existiam, insere antes de [END] ou ao final
-  const missing = ALL_SECTIONS.filter(s => !seen.has(s));
+  const missing = activeSections(data).filter(s => !seen.has(s));
   if (missing.length) {
     const endIdx = result.findIndex(l => l.trim().toUpperCase() === '[END]');
     const block: string[] = [];
@@ -336,7 +360,7 @@ function buildMinimalInp(data: NetworkData): string {
   out.push('[TITLE]');
   out.push('Gerado pelo Gêmeo Digital Hidráulico');
   out.push('');
-  for (const sec of ALL_SECTIONS) {
+  for (const sec of activeSections(data)) {
     out.push(`[${sec}]`);
     for (const ln of buildSection(sec, data)) out.push(ln);
     out.push('');

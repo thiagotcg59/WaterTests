@@ -17,7 +17,7 @@ export interface LayerVisibility {
   smartSensors: boolean;
 }
 
-export type EditMode = 'select' | 'move' | 'addNode' | 'addPipe' | 'addValve' | 'delete' | 'drawPolygon' | 'inspectCoord' | 'lassoSelect';
+export type EditMode = 'select' | 'move' | 'addNode' | 'addPipe' | 'addPump' | 'addValve' | 'delete' | 'drawPolygon' | 'inspectCoord' | 'lassoSelect';
 
 export const DEFAULT_LAYERS: LayerVisibility = {
   junctions: true,

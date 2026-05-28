@@ -211,10 +211,10 @@ export function buildLinkFromDraft(
     // (comportamento padrão do EPANET quando os dois estão presentes).
     if (draft.pumpCurve && draft.pumpCurve.trim()) {
       base.parameters = `HEAD ${draft.pumpCurve.trim()}`;
-    } else if (typeof draft.power === 'number') {
+    } else if (typeof draft.power === 'number' && draft.power > 0) {
       base.parameters = `POWER ${draft.power}`;
     } else {
-      base.parameters = '';
+      base.parameters = 'POWER 10';
     }
     if (typeof draft.initialSpeed === 'number') base.speed = draft.initialSpeed;
     if (draft.speedPattern) base.speedPattern = draft.speedPattern;

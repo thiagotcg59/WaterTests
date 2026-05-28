@@ -1,7 +1,8 @@
 'use client';
 
-import { LinkElement, NodeElement, TimeSeriesData } from '../types/epanet';
-import { Save, X, Move, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { LinkElement, NodeElement, TimeSeriesData, PumpCurve } from '../types/epanet';
+import { Save, X, Move, Trash2, Zap, TrendingUp } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
@@ -13,6 +14,7 @@ interface EditableElementPanelProps {
   onSaveNode: (id: string, patch: Partial<NodeElement>) => void;
   onSaveLink: (id: string, patch: Partial<LinkElement>) => void;
   timeSeries?: TimeSeriesData;
+  curves?: Record<string, PumpCurve>;
   /** Índice do passo de tempo selecionado no slider 24h. Quando informado,
    *  os valores da seção "Resultados" são lidos da série temporal nesse
    *  índice, em vez do snapshot t=0 armazenado no elemento. */
@@ -113,6 +115,7 @@ export default function EditableElementPanel({
   selectedTimeIndex,
   onRequestMove,
   onRequestDelete,
+  curves,
 }: EditableElementPanelProps) {
   if (!element) return null;
 
@@ -212,7 +215,7 @@ export default function EditableElementPanel({
             </>
           ) : (
             <>
-              <LinkFields element={element as LinkElement} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} />
+              <LinkFields element={element as LinkElement} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} curves={curves} />
               {timeSeries && <MiniLinkChart elementId={element.id} timeSeries={timeSeries} />}
             </>
           )}
@@ -393,10 +396,172 @@ function LinkResults({
   );
 }
 
+// ── Pump parameters sub-component ─────────────────────────────────────────────
+
+function parsePumpParams(raw: string): { mode: 'HEAD' | 'POWER'; curveId: string; power: string; speed: string; pattern: string } {
+  const parts = (raw ?? '').trim().split(/\s+/);
+  const keyword = parts[0]?.toUpperCase();
+  if (keyword === 'HEAD') {
+    const curveId = parts[1] ?? '';
+    let speed = '';
+    let pattern = '';
+    for (let i = 2; i < parts.length - 1; i++) {
+      if (parts[i].toUpperCase() === 'SPEED') speed = parts[i + 1] ?? '';
+      if (parts[i].toUpperCase() === 'PATTERN') pattern = parts[i + 1] ?? '';
+    }
+    return { mode: 'HEAD', curveId, power: '', speed, pattern };
+  }
+  if (keyword === 'POWER') {
+    return { mode: 'POWER', curveId: '', power: parts[1] ?? '10', speed: '', pattern: '' };
+  }
+  return { mode: 'POWER', curveId: '', power: '10', speed: '', pattern: '' };
+}
+
+function assemblePumpParams(mode: 'HEAD' | 'POWER', curveId: string, power: string, speed: string, pattern: string): string {
+  if (mode === 'POWER') return `POWER ${power || '10'}`;
+  let s = `HEAD ${curveId || ''}`;
+  if (speed) s += ` SPEED ${speed}`;
+  if (pattern) s += ` PATTERN ${pattern}`;
+  return s.trim();
+}
+
+function PumpParamsFields({ element, curves }: { element: LinkElement; curves?: Record<string, PumpCurve> }) {
+  const init = parsePumpParams(element.parameters ?? '');
+  const [mode, setMode] = useState<'HEAD' | 'POWER'>(init.mode);
+  const [curveId, setCurveId] = useState(init.curveId);
+  const [power, setPower] = useState(init.power || '10');
+  const [speed, setSpeed] = useState(init.speed);
+  const [pattern, setPattern] = useState(init.pattern);
+
+  const assembled = assemblePumpParams(mode, curveId, power, speed, pattern);
+  const curveList = Object.values(curves ?? {});
+  const selectedCurve = curves?.[curveId];
+  const chartData = selectedCurve ? [...selectedCurve.points].sort((a, b) => a.x - b.x).map(p => ({ Q: p.x, H: p.y })) : [];
+
+  const selectCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
+  const inputCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
+  const labelCls = 'mb-1 flex items-center justify-between text-xs text-zinc-500';
+
+  return (
+    <div className="space-y-3">
+      {/* Hidden input that carries the assembled value to the form submit */}
+      <input type="hidden" name="parameters" value={assembled} />
+
+      {/* Mode toggle */}
+      <div>
+        <span className={labelCls}>Modo de operação</span>
+        <div className="flex rounded-md overflow-hidden border border-zinc-800">
+          <button
+            type="button"
+            onClick={() => setMode('HEAD')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-semibold transition-colors ${
+              mode === 'HEAD' ? 'bg-green-700 text-white' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100'
+            }`}
+          >
+            <TrendingUp className="w-3.5 h-3.5" /> Curva Q-H (HEAD)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('POWER')}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-semibold transition-colors ${
+              mode === 'POWER' ? 'bg-amber-600 text-white' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100'
+            }`}
+          >
+            <Zap className="w-3.5 h-3.5" /> Potência constante
+          </button>
+        </div>
+      </div>
+
+      {mode === 'HEAD' ? (
+        <>
+          <label className="block">
+            <span className={labelCls}>Curva de bomba</span>
+            {curveList.length === 0 ? (
+              <div className="text-[11px] text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1.5">
+                Nenhuma curva cadastrada. Vá em <b>Modelagem Hidráulica → Curvas de Bomba</b> para criar uma.
+              </div>
+            ) : (
+              <select className={selectCls} value={curveId} onChange={e => setCurveId(e.target.value)}>
+                <option value="">— selecione uma curva —</option>
+                {curveList.map(c => (
+                  <option key={c.id} value={c.id}>{c.id}{c.description ? ` — ${c.description}` : ''}</option>
+                ))}
+              </select>
+            )}
+          </label>
+
+          {selectedCurve && chartData.length >= 2 && (
+            <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
+              <div className="text-[10px] text-zinc-500 mb-1">Curva: <span className="text-green-400 font-mono">{selectedCurve.id}</span></div>
+              <ResponsiveContainer width="100%" height={100}>
+                <LineChart data={chartData} margin={{ top: 2, right: 4, bottom: 2, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis dataKey="Q" tick={{ fontSize: 9, fill: '#71717a' }} />
+                  <YAxis tick={{ fontSize: 9, fill: '#71717a' }} />
+                  <Tooltip
+                    contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 4, fontSize: 10 }}
+                    formatter={(v: unknown) => [`${v} m`, 'H'] as [string, string]}
+                    labelFormatter={(v) => `Q = ${v} L/s`}
+                  />
+                  <Line type="monotone" dataKey="H" stroke="#22c55e" strokeWidth={2} dot={{ r: 2 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          <label className="block">
+            <span className={labelCls}>Velocidade relativa (SPEED) <span className="text-zinc-600">opcional</span></span>
+            <input
+              type="number" step="0.01" min="0.1" max="2"
+              value={speed}
+              onChange={e => setSpeed(e.target.value)}
+              placeholder="1.0 (padrão)"
+              className={inputCls}
+            />
+          </label>
+
+          <label className="block">
+            <span className={labelCls}>Padrão de rotação (PATTERN) <span className="text-zinc-600">opcional</span></span>
+            <input
+              type="text"
+              value={pattern}
+              onChange={e => setPattern(e.target.value)}
+              placeholder="nome do padrão"
+              className={inputCls}
+            />
+          </label>
+        </>
+      ) : (
+        <label className="block">
+          <span className={labelCls}>Potência (kW)</span>
+          <input
+            type="number" step="0.1" min="0.1"
+            value={power}
+            onChange={e => setPower(e.target.value)}
+            placeholder="10"
+            className={inputCls}
+          />
+          <div className="text-[10px] text-zinc-600 mt-1">
+            Bomba de potência constante — funciona sem curva Q-H definida.
+          </div>
+        </label>
+      )}
+
+      {/* INP preview */}
+      <div className="rounded border border-zinc-800 bg-zinc-950/50 px-2 py-1.5 text-[10px] text-zinc-500">
+        INP: <code className={mode === 'HEAD' ? 'text-green-400' : 'text-amber-400'}>{assembled}</code>
+      </div>
+    </div>
+  );
+}
+
+// ── LinkFields ─────────────────────────────────────────────────────────────────
+
 function LinkFields({
-  element, timeSeries, selectedTimeIndex,
-}: { element: LinkElement; timeSeries?: TimeSeriesData; selectedTimeIndex?: number }) {
+  element, timeSeries, selectedTimeIndex, curves,
+}: { element: LinkElement; timeSeries?: TimeSeriesData; selectedTimeIndex?: number; curves?: Record<string, PumpCurve> }) {
   const isValve = element.type === 'valve';
+  const isPump = element.type === 'pump';
 
   return (
     <>
@@ -405,10 +570,15 @@ function LinkFields({
         <span className="px-2">-&gt;</span>
         <span className="font-mono text-zinc-200">{element.node2}</span>
       </div>
-      <Field name="length" label="Comprimento" unit="m" defaultValue={numberValue(element.length)} />
-      <Field name="diameter" label="Diametro" unit="mm" defaultValue={numberValue(element.diameter)} />
-      <Field name="roughness" label="Rugosidade" defaultValue={numberValue(element.roughness)} />
-      <Field name="minorLoss" label="Perda menor" defaultValue={numberValue(element.minorLoss)} />
+
+      {!isPump && (
+        <>
+          <Field name="length" label="Comprimento" unit="m" defaultValue={numberValue(element.length)} />
+          <Field name="diameter" label="Diametro" unit="mm" defaultValue={numberValue(element.diameter)} />
+          <Field name="roughness" label="Rugosidade" defaultValue={numberValue(element.roughness)} />
+          <Field name="minorLoss" label="Perda menor" defaultValue={numberValue(element.minorLoss)} />
+        </>
+      )}
 
       {element.type === 'pipe' && (
         <label className="block">
@@ -456,21 +626,36 @@ function LinkFields({
           <Field name="setting" label="Setting" defaultValue={String(element.setting ?? 0)} />
           <Field name="elevation" label="Elevacao da valvula" unit="m" defaultValue={numberValue(element.elevation)} />
         </>
+      ) : isPump ? (
+        <>
+          <label className="block">
+            <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Status</span>
+            <select
+              name="status"
+              defaultValue={(element.status || 'OPEN').toUpperCase()}
+              className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500"
+            >
+              <option value="OPEN">Ligada (OPEN)</option>
+              <option value="CLOSED">Desligada (CLOSED)</option>
+            </select>
+          </label>
+          <PumpParamsFields key={element.id} element={element} curves={curves} />
+        </>
       ) : (
-      <label className="block">
-        <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Status</span>
-        <select
-          name="status"
-          defaultValue={(element.status || 'OPEN').toUpperCase()}
-          className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500"
-        >
-          <option value="OPEN">Aberto (OPEN)</option>
-          <option value="CLOSED">Fechado (CLOSED)</option>
-        </select>
-      </label>
+        <label className="block">
+          <span className="mb-1 flex items-center justify-between text-xs text-zinc-500">Status</span>
+          <select
+            name="status"
+            defaultValue={(element.status || 'OPEN').toUpperCase()}
+            className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500"
+          >
+            <option value="OPEN">Aberto (OPEN)</option>
+            <option value="CLOSED">Fechado (CLOSED)</option>
+          </select>
+        </label>
       )}
 
-      <Field name="parameters" label="Parametros" defaultValue={element.parameters} />
+      {!isPump && <Field name="parameters" label="Parametros" defaultValue={element.parameters} />}
 
       <LinkResults element={element} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} />
     </>

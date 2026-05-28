@@ -13,6 +13,9 @@ export interface SimulationErrorInfo {
   technicalExplanation: string;
   suggestions: string[];
   stack?: string;
+  lintIssues?: string[];
+  reportErrorLines?: string[];
+  inpContent?: string;
 }
 
 const DEFAULT_SUGGESTIONS: string[] = [
@@ -29,7 +32,7 @@ const DEFAULT_SUGGESTIONS: string[] = [
 function inferStage(message: string): SimulationErrorStage {
   const m = message.toLowerCase();
   if (/405\s*not\s*allowed|<html|<title>/i.test(message)) return 'comunicação com o servidor';
-  if (/cannot open file|code\s*200|input data|file format|file does not exist/.test(m)) {
+  if (/cannot open file|code\s*200|error\s*200|input data|file format|file does not exist/.test(m)) {
     return 'leitura do INP';
   }
   if (/code\s*223|illegally connected|code\s*233|node.*not connected|illegal node|undefined node|no inexistente|referencia.*inexistente|duplicate|repeated/.test(m)) {
@@ -74,8 +77,8 @@ function buildExplanation(message: string): string {
   if (/cannot open file/.test(m)) {
     return 'Não foi possível abrir o arquivo .INP. Verifique se o conteúdo do INP foi gerado corretamente antes da simulação.';
   }
-  if (/code\s*200|input data/.test(m)) {
-    return 'Dados de entrada do arquivo .INP inválidos. Pode ser uma seção mal formada, valores fora do intervalo aceito ou referências quebradas entre seções.';
+  if (/code\s*200|error\s*200|input data/.test(m)) {
+    return 'Dados de entrada do arquivo .INP inválidos. Causas comuns: bomba sem parâmetros POWER ou HEAD, curva referenciada mas não cadastrada, seção mal formada ou valores fora do intervalo aceito.';
   }
   if (/code\s*101|insufficient memory/.test(m)) {
     return 'Memória insuficiente para executar a simulação. Pode ser uma rede muito grande, ou um loop interno do solver.';
@@ -111,6 +114,10 @@ function buildSuggestions(message: string): string[] {
   if (/non-numeric|not a number|format|syntax/.test(m)) {
     focused.push('Procurar valores numéricos com vírgula em vez de ponto, ou colunas a mais/menos por linha.');
   }
+  if (/code\s*200|error\s*200|input data/.test(m)) {
+    focused.push('Verificar se todas as bombas têm POWER <kW> ou HEAD <curva> definidos — bomba sem parâmetros causa Error 200.');
+    focused.push('Verificar se curvas referenciadas pelas bombas estão na seção [CURVES].');
+  }
   if (/405\s*not\s*allowed|<html|<title>/i.test(message)) {
     focused.push('Rodar localmente com `npm run dev` para validar — a rota /api/simular não existe em hospedagem estática.');
   }
@@ -122,7 +129,7 @@ function buildSuggestions(message: string): string[] {
 
 export function interpretEpanetError(
   errorMessage: string,
-  options?: { fileName?: string | null; stack?: string; inpContent?: string }
+  options?: { fileName?: string | null; stack?: string; inpContent?: string; lintIssues?: string[]; reportErrorLines?: string[] }
 ): SimulationErrorInfo {
   const message = (errorMessage ?? '').toString();
   return {
@@ -132,5 +139,8 @@ export function interpretEpanetError(
     technicalExplanation: buildExplanation(message),
     suggestions: buildSuggestions(message),
     stack: options?.stack,
+    lintIssues: options?.lintIssues,
+    reportErrorLines: options?.reportErrorLines,
+    inpContent: options?.inpContent,
   };
 }

@@ -59,6 +59,8 @@ export interface RunSimulationFailure {
   errorTechnical?: string;
   errorReportTail?: string;
   errorLog?: string;
+  lintIssues?: string[];
+  reportErrorLines?: string[];
 }
 
 export type RunSimulationResult = RunSimulationSuccess | RunSimulationFailure;
@@ -235,6 +237,10 @@ function lintInpForCommonIssues(inp: string): string[] {
   }
 
   for (const pump of pumpDefs) {
+    if (!pump.parameters || pump.parameters.trim() === '') {
+      issues.push(`Bomba ${pump.id} sem parâmetros definidos (linha ${pump.line}). Precisa de POWER <kW> ou HEAD <nome-da-curva>.`);
+      continue;
+    }
     const headMatch = /\bHEAD\s+([^\s;]+)/i.exec(pump.parameters);
     if (headMatch) {
       const curveId = headMatch[1].trim();
@@ -242,13 +248,52 @@ function lintInpForCommonIssues(inp: string): string[] {
         issues.push(`Bomba ${pump.id} referencia curva HEAD inexistente: ${curveId} (linha ${pump.line}).`);
       }
     }
+    if (!/\b(HEAD|POWER|SPEED|PATTERN|EFFIC|ENERGYPRICE|PRICE)\b/i.test(pump.parameters)) {
+      issues.push(`Bomba ${pump.id} tem parâmetros em formato inválido: "${pump.parameters}" (linha ${pump.line}).`);
+    }
   }
 
   return Array.from(new Set(issues));
 }
 
+// Strips sections and option keywords that are valid in EPANET-WORKS or
+// EPANET 3 exports but cause Error 200 in the EPANET 2.2 engine.
+const NON_STANDARD_SECTIONS = new Set([
+  'LEAKAGE', 'CUSTOMER_METERS', 'CUSTOMER_METER_PRESSURES',
+]);
+// First word of [OPTIONS] lines that EPANET 2.2 doesn't recognize
+const NON_STANDARD_OPTIONS = new Set([
+  'BACKFLOW', 'MINIMUM_PRESSURE', 'REQUIRED_PRESSURE', 'PRESSURE_EXPONENT',
+]);
+
+function sanitizeInp(raw: string): string {
+  const lines = raw.split(/\r?\n/);
+  const out: string[] = [];
+  let section = '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const headerMatch = /^\[([^\]]+)\]/.exec(trimmed);
+    if (headerMatch) {
+      section = headerMatch[1].trim().toUpperCase();
+      if (NON_STANDARD_SECTIONS.has(section)) continue;
+      out.push(line);
+      continue;
+    }
+    if (NON_STANDARD_SECTIONS.has(section)) continue;
+
+    if (section === 'OPTIONS') {
+      const firstWord = trimmed.split(/[\s;]/)[0].toUpperCase();
+      if (NON_STANDARD_OPTIONS.has(firstWord)) continue;
+    }
+
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 export async function runSimulationClient(input: RunSimulationInput): Promise<RunSimulationResult> {
-  const inp = typeof input?.inp === 'string' ? input.inp : '';
+  const inp = typeof input?.inp === 'string' ? sanitizeInp(input.inp) : '';
   const durationHours = typeof input?.durationHours === 'number' && input.durationHours > 0
     ? input.durationHours : 0;
   const customPattern = Array.isArray(input?.consumptionPattern) && input.consumptionPattern.length === 24
@@ -440,6 +485,8 @@ export async function runSimulationClient(input: RunSimulationInput): Promise<Ru
       errorTechnical: technicalError,
       errorReportTail: reportTail,
       errorLog: logLines.join('\n\n'),
+      lintIssues: inputLint,
+      reportErrorLines: reportErrorLines,
     };
   }
 }

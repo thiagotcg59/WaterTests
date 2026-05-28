@@ -46,6 +46,7 @@ import BulkEditPanel from '../components/BulkEditPanel';
 import { type HydraulicDraft, isNodeDraft, isLinkDraft, buildNodeFromDraft, buildLinkFromDraft } from '../lib/hydraulicDraft';
 import { runSimulationClient } from '../lib/simulation/runSimulationClient';
 import SimulationErrorsTab from '../components/SimulationErrorsTab';
+import PumpCurvesTab from '../components/PumpCurvesTab';
 import WeatherIndicator from '../components/WeatherIndicator';
 import { ANCHOR_PRESETS, DEFAULT_ANCHOR, type GeoAnchor } from '../lib/geoTransform';
 import { DIAMETER_RANGES, NodeColorMode, LinkColorMode, PRESSURE_RANGES } from '../lib/colorScales';
@@ -388,7 +389,7 @@ export default function Home() {
   const [simStats, setSimStats] = useState<SimulationStats>({ hasResults: false });
   const [isSimulating, setIsSimulating] = useState(false);
   const [tab, setTab] = useState<TabKey>('mapa');
-  const [modelagemSubtab, setModelagemSubtab] = useState<'controles' | 'calibracao' | 'parametros' | 'consumidores' | 'mapa-gis' | 'erros'>('controles');
+  const [modelagemSubtab, setModelagemSubtab] = useState<'controles' | 'calibracao' | 'parametros' | 'consumidores' | 'mapa-gis' | 'erros' | 'curvas'>('controles');
   const [simulationError, setSimulationError] = useState<SimulationErrorInfo | null>(null);
   const [geoAnchor, setGeoAnchorState] = useState<GeoAnchor>(DEFAULT_ANCHOR);
   const [showGeoAnchorMenu, setShowGeoAnchorMenu] = useState(false);
@@ -434,6 +435,7 @@ export default function Home() {
   const [valveInsertType, setValveInsertType] = useState<'PRV' | 'PSV' | 'PBV' | 'FCV' | 'TCV' | 'GPV'>('PRV');
   const [valveInsertSetting, setValveInsertSetting] = useState<number>(10);
   const [valveInsertDiameter, setValveInsertDiameter] = useState<number>(100);
+  const [pumpInsertPower, setPumpInsertPower] = useState<number>(10);
   const [nodeColorMode, setNodeColorMode] = useState<NodeColorMode>('pressure');
   const [linkColorMode, setLinkColorMode] = useState<LinkColorMode>('diameter');
   const [sectors, setSectors] = useState<Sector[]>([]);
@@ -670,6 +672,7 @@ export default function Home() {
           hydraulicControls
         )
       );
+      console.log('[DEBUG-INP] Conteúdo enviado ao EPANET:\n', inpToRun);
       const result = await runSimulationClient({
         inp: inpToRun,
         durationHours: simDurationHours,
@@ -681,7 +684,7 @@ export default function Home() {
         const detailed = result.errorLog || [result.errorHint, result.errorTechnical, result.errorReportTail].filter(Boolean).join('\n\n');
         setErrorLog(detailed || result.error || 'Falha na simulacao.');
         const technicalSource = result.errorTechnical || result.error || detailed || 'Falha na simulação.';
-        setSimulationError(interpretEpanetError(technicalSource, { fileName }));
+        setSimulationError(interpretEpanetError(technicalSource, { fileName, lintIssues: result.lintIssues, reportErrorLines: result.reportErrorLines, inpContent: inpToRun }));
         setSimStats({ hasResults: false });
         return;
       }
@@ -1527,6 +1530,27 @@ export default function Home() {
     }));
   };
 
+  const handlePumpAdded = (sourceId: string, targetId: string) => {
+    if (!networkData) return;
+    if (pendingHydraulicDraft && isLinkDraft(pendingHydraulicDraft) && pendingHydraulicDraft.kind === 'pump') {
+      const link = buildLinkFromDraft(pendingHydraulicDraft, sourceId, targetId);
+      updateNetwork((d) => addLink(d, link));
+      setLastHydraulicDraft(pendingHydraulicDraft);
+      setPendingHydraulicDraft(null);
+      setGisEditMode('select');
+      return;
+    }
+    const id = nextId('B', networkData.links);
+    updateNetwork(data => addLink(data, {
+      id,
+      type: 'pump',
+      node1: sourceId,
+      node2: targetId,
+      parameters: `POWER ${pumpInsertPower}`,
+      status: 'OPEN',
+    }));
+  };
+
   // Recebe o draft preenchido pelo QuickHydraulicModelPanel: armazena
   // como pendente e ativa o modo de criação correto no mapa GIS, para
   // que o próximo clique do usuário insira o elemento já configurado.
@@ -1535,6 +1559,8 @@ export default function Home() {
     if (isNodeDraft(draft)) {
       setActiveNodeKind(draft.kind);
       setGisEditMode('addNode');
+    } else if (draft.kind === 'pump') {
+      setGisEditMode('addPump');
     } else {
       setGisEditMode('addPipe');
     }
@@ -2142,6 +2168,20 @@ export default function Home() {
     }
     updateNetwork(data => updateLinkAttrs(data, id, patch));
     setSelectedElement(prev => prev?.id === id && !isNodeElement(prev) ? clearLinkResults({ ...prev, ...patch } as LinkElement) : prev);
+  };
+
+  const handleAddCurve = (curve: import('../types/epanet').PumpCurve) => {
+    updateNetwork(data => ({ ...data, curves: { ...(data.curves ?? {}), [curve.id]: curve } }));
+  };
+  const handleDeleteCurve = (id: string) => {
+    updateNetwork(data => {
+      const next = { ...(data.curves ?? {}) };
+      delete next[id];
+      return { ...data, curves: Object.keys(next).length > 0 ? next : undefined };
+    });
+  };
+  const handleUpdateCurve = (curve: import('../types/epanet').PumpCurve) => {
+    updateNetwork(data => ({ ...data, curves: { ...(data.curves ?? {}), [curve.id]: curve } }));
   };
 
   const handleSaveCustomerMeter = (id: string, patch: Partial<CustomerMeter>) => {
@@ -3118,6 +3158,7 @@ export default function Home() {
                         onNodeAdded={handleNodeAdded}
                         onNodeAddedGetId={handleNodeAddedGetId}
                         onPipeAdded={handlePipeAdded}
+                        onPumpAdded={handlePumpAdded}
                         onPipeConnectedToLink={handlePipeConnectedToLink}
                         onElementDeleted={handleElementDeleted}
                         onElementContextMenu={(id, kind, clientX, clientY) => {
@@ -3215,6 +3256,7 @@ export default function Home() {
                           ['controles', 'Controles'],
                           ['mapa-gis', 'Mapa GIS'],
                           ['consumidores', 'Consumidores'],
+                          ['curvas', 'Curvas de Bomba'],
                           ['calibracao', 'Calibração'],
                           ['parametros', 'Parâmetros'],
                           ['erros', 'Erros da Simulação'],
@@ -3303,12 +3345,15 @@ export default function Home() {
                           setValveSetting={setValveInsertSetting}
                           valveDiameter={valveInsertDiameter}
                           setValveDiameter={setValveInsertDiameter}
+                          pumpPower={pumpInsertPower}
+                          setPumpPower={setPumpInsertPower}
                           onElementClick={setSelectedElement}
                           onValveInsertedOnPipe={handleValveInsertedOnPipe}
                           onNodeMoved={handleNodeMoved}
                           onNodeAdded={handleNodeAdded}
                           onNodeAddedGetId={handleNodeAddedGetId}
                           onPipeAdded={handlePipeAdded}
+                          onPumpAdded={handlePumpAdded}
                           onPipeConnectedToLink={handlePipeConnectedToLink}
                           onElementDeleted={handleElementDeleted}
                           onSaveNode={handleSaveNode}
@@ -3347,6 +3392,17 @@ export default function Home() {
                         />
                       )}
 
+                      {modelagemSubtab === 'curvas' && (
+                        <div className="h-full min-h-0 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 flex flex-col">
+                          <PumpCurvesTab
+                            data={networkData}
+                            onAddCurve={handleAddCurve}
+                            onDeleteCurve={handleDeleteCurve}
+                            onUpdateCurve={handleUpdateCurve}
+                          />
+                        </div>
+                      )}
+
                       {modelagemSubtab === 'calibracao' && (
                         <div className="h-full min-h-0 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 flex flex-col">
                           <SimulationOptionsPanel
@@ -3371,6 +3427,7 @@ export default function Home() {
                       {modelagemSubtab !== 'controles' &&
                         modelagemSubtab !== 'consumidores' &&
                         modelagemSubtab !== 'mapa-gis' &&
+                        modelagemSubtab !== 'curvas' &&
                         modelagemSubtab !== 'parametros' &&
                         modelagemSubtab !== 'calibracao' &&
                         modelagemSubtab !== 'erros' && (
@@ -3531,6 +3588,7 @@ export default function Home() {
                   onSaveLink={handleSaveLink}
                   timeSeries={networkData.timeSeries}
                   selectedTimeIndex={selectedTimeIndex}
+                  curves={networkData.curves}
                   onRequestMove={() => {
                     setGisEditMode('move');
                   }}
