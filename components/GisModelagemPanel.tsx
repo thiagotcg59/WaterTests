@@ -288,7 +288,10 @@ function SelectedElementEditor({
               Elev. base EPANET: <span className="font-mono font-semibold">{((parseFloat(form.elevation?.replace(',', '.') ?? '') || (tipoResTank === 'elevado' ? (n.elevation ?? 0) - (_elInit.alturaFuste ?? 0) : (n.elevation ?? 0))) + alturaFusteTank).toFixed(2)} m</span>
             </div>
           </>}
-          <Field label="Nível inicial (m)"><input className={inputCls} type="number" step="0.1" value={val('initLevel', n.initLevel)} onChange={e => set('initLevel', e.target.value)} /></Field>
+          <div className="rounded border border-amber-600/50 bg-amber-900/10 px-2 py-1.5">
+            <label className={labelCls + ' text-amber-400'}>Nível inicial (m)</label>
+            <input className={inputCls + ' border-amber-700/60 font-semibold'} type="number" step="0.1" value={val('initLevel', n.initLevel)} onChange={e => set('initLevel', e.target.value)} />
+          </div>
           <div className="rounded border border-zinc-800 p-2 space-y-1.5">
             <div className="text-[9px] uppercase tracking-wider text-zinc-600">Geometria</div>
             <div className="flex overflow-hidden rounded border border-zinc-700">
@@ -545,7 +548,10 @@ function CreateElementForm({
           <Field label="Altura do fuste (m)"><input className={inputCls} type="number" step="0.1" min="0" value={alturaFusteCreate || ''} onChange={e => setAlturaFusteCreate(parseFloat(e.target.value) || 0)} placeholder="0" /></Field>
           {(num('elevation') > 0 || alturaFusteCreate > 0) && <div className="rounded bg-blue-900/20 px-2 py-1 text-[10px] text-blue-300">Elev. base EPANET: <span className="font-mono font-semibold">{(num('elevation') + alturaFusteCreate).toFixed(2)} m</span></div>}
         </>}
-        <Field label="Nível inicial (m)"><input className={inputCls} type="number" value={fields.initLevel ?? ''} onChange={e => set('initLevel', e.target.value)} placeholder="1" /></Field>
+        <div className="rounded border border-amber-600/50 bg-amber-900/10 px-2 py-1.5">
+          <label className={labelCls + ' text-amber-400'}>Nível inicial (m)</label>
+          <input className={inputCls + ' border-amber-700/60 font-semibold'} type="number" value={fields.initLevel ?? ''} onChange={e => set('initLevel', e.target.value)} placeholder="1" />
+        </div>
         <div className="grid grid-cols-2 gap-1">
           <Field label="Nível Mín. (m)"><input className={inputCls} type="number" value={fields.minLevel ?? ''} onChange={e => set('minLevel', e.target.value)} placeholder="0" /></Field>
           <Field label="Nível Máx. (m)"><input className={inputCls} type="number" value={fields.maxLevel ?? ''} onChange={e => set('maxLevel', e.target.value)} placeholder="5" /></Field>

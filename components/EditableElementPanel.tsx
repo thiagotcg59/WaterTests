@@ -573,7 +573,21 @@ function NodeFields({
   return (
     <>
       <TankTypeAndElevation element={element} />
-      <Field name="initLevel" label="Nível inicial" unit="m" defaultValue={numberValue(element.initLevel)} />
+      <div className="rounded-md border border-amber-600/50 bg-amber-900/10 px-3 py-2.5">
+        <label className="block">
+          <span className="mb-1 flex items-center justify-between text-xs font-semibold text-amber-400">
+            Nível inicial <span>m</span>
+          </span>
+          <input
+            name="initLevel"
+            type="number"
+            step="0.01"
+            defaultValue={numberValue(element.initLevel)}
+            className="w-full rounded-md border border-amber-700/60 bg-zinc-950 px-2 py-1.5 text-sm font-semibold text-zinc-100 outline-none focus:border-amber-500"
+          />
+        </label>
+        <div className="mt-1 text-[10px] text-amber-600/80">Nível de água no início da simulação</div>
+      </div>
       <TankGeometrySection element={element} />
       <Field name="minVolume" label="Volume mínimo (EPANET)" unit="m³" defaultValue={numberValue(element.minVolume)} />
       <NodeResults element={element} timeSeries={timeSeries} selectedTimeIndex={selectedTimeIndex} />
