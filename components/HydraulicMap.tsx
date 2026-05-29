@@ -1236,8 +1236,10 @@ export default function HydraulicMap({
       [e.point.x - PIPE_SNAP_RADIUS_PX, e.point.y - PIPE_SNAP_RADIUS_PX],
       [e.point.x + PIPE_SNAP_RADIUS_PX, e.point.y + PIPE_SNAP_RADIUS_PX],
     ];
+    // Consulta LYR_PIPES (linha visual) e LYR_LINKS_HIT (hit-area larga) — garante
+    // snap mesmo quando o clique não cai exatamente sobre a linha renderizada.
     const features = m.queryRenderedFeatures(bbox, {
-      layers: [LYR_PIPES],
+      layers: [LYR_PIPES, LYR_LINKS_HIT],
     });
     if (features.length === 0) return null;
 
@@ -1247,6 +1249,9 @@ export default function HydraulicMap({
       if (feature.geometry.type !== 'LineString') continue;
       const coords = (feature.geometry as GeoJSON.LineString).coordinates;
       if (!coords || coords.length < 2) continue;
+
+      const linkId = (feature.properties?.id as string) ?? '';
+      if (!linkId) continue;
 
       for (let i = 0; i < coords.length - 1; i += 1) {
         const a = m.project(coords[i] as [number, number]);
@@ -1265,8 +1270,6 @@ export default function HydraulicMap({
         if (distPx > PIPE_SNAP_RADIUS_PX) continue;
 
         const snapLngLat = m.unproject([snapX, snapY]);
-        const linkId = (feature.properties?.id as string) ?? '';
-        if (!linkId) continue;
 
         if (!best || distPx < best.distPx) {
           best = {
@@ -1396,27 +1399,13 @@ export default function HydraulicMap({
           }
         }
         // Junção criada sobre um trecho existente → divide o trecho e insere a junção.
-        // Usa LYR_LINKS_HIT (hit-area de 14px) para detectar o trecho mais próximo,
-        // depois recalcula o snap preciso sobre a geometria do LYR_PIPES.
+        // findPipeSnapAt consulta LYR_PIPES + LYR_LINKS_HIT e retorna o ponto
+        // exato na geometria do trecho mais próximo ao clique.
         if (targetKind === 'junction' && onNodeInsertedOnPipe) {
           const snap = findPipeSnapAt(m, e);
           if (snap) {
             onNodeInsertedOnPipe(snap.linkId, snap.lng, snap.lat);
             return;
-          }
-          // Fallback: tenta a hit-area mais larga (LYR_LINKS_HIT) para pegar
-          // trechos que não foram encontrados pelo LYR_PIPES no bbox exato.
-          const hitBbox: [[number, number], [number, number]] = [
-            [e.point.x - PIPE_SNAP_RADIUS_PX, e.point.y - PIPE_SNAP_RADIUS_PX],
-            [e.point.x + PIPE_SNAP_RADIUS_PX, e.point.y + PIPE_SNAP_RADIUS_PX],
-          ];
-          const hitFeats = m.queryRenderedFeatures(hitBbox, { layers: [LYR_LINKS_HIT] });
-          if (hitFeats.length > 0) {
-            const linkId = (hitFeats[0].properties?.id as string) ?? '';
-            if (linkId) {
-              onNodeInsertedOnPipe(linkId, e.lngLat.lng, e.lngLat.lat);
-              return;
-            }
           }
         }
         onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
