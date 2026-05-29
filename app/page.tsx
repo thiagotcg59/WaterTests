@@ -1940,6 +1940,28 @@ export default function Home() {
     }
   };
 
+  // Delete/Backspace com elemento selecionado na aba GIS → apaga o elemento
+  useEffect(() => {
+    if (tab !== 'gis') return;
+    if (!selectedElement) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+      }
+      e.preventDefault();
+      const el = selectedElement;
+      const isNode = ['junction', 'reservoir', 'tank'].includes(el.type);
+      if (window.confirm(`Apagar ${el.type} "${el.id}"?`)) {
+        handleElementDeleted(el.id, isNode ? 'node' : 'link');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tab, selectedElement, handleElementDeleted]);
+
   // Recebe IDs selecionados pelo lasso na aba GIS e abre o painel de
   // edição em massa. setTimeout sai do tick atual do MapLibre.
   const handleLassoSelect = (nodeIds: string[], linkIds: string[]) => {
