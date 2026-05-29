@@ -1289,6 +1289,22 @@ export default function HydraulicMap({
     if (!m || !mapReady) return;
 
     const onClick = (e: MapMouseEvent) => {
+      // Em qualquer modo (exceto deletar/desenhar polígono/inspecionar),
+      // clicar sobre um elemento existente o seleciona no painel de propriedades.
+      if (!['delete', 'drawPolygon', 'lassoSelect', 'inspectCoord'].includes(editMode)) {
+        const hoverNodeId = findNodeIdAt(m, e);
+        if (hoverNodeId) {
+          const hn = data.nodes[hoverNodeId];
+          if (hn) onElementClick(hn);
+        } else {
+          const hoverLinkId = findLinkIdAt(m, e);
+          if (hoverLinkId) {
+            const hl = data.links[hoverLinkId];
+            if (hl) onElementClick(hl);
+          }
+        }
+      }
+
       if (editMode === 'select') {
         const smartSensor = findSmartSensorAt(m, e);
         if (smartSensor) {
