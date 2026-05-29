@@ -1496,25 +1496,20 @@ export default function Home() {
 
       const transform = networkToGeoJson(data, geoAnchor, { frozenCenter: geoCenter }).transform;
 
-      // Converte o ponto clicado para EPANET
-      const [x, y] = transform.toEpanet(lng, lat);
+      // Posição EPANET do snap — usada diretamente como coordenada da junção.
+      // Não reprojetamos no segmento reto para não deslocar o ponto visualmente.
+      const [snapX, snapY] = transform.toEpanet(lng, lat);
 
-      // Projeta sobre o segmento EPANET node1→node2 para obter t
+      // t serve apenas para calcular a proporção do comprimento dos sub-trechos.
       const ax = node1.coordinates.x, ay = node1.coordinates.y;
       const bx = node2.coordinates.x, by = node2.coordinates.y;
       const abx = bx - ax, aby = by - ay;
       const ab2 = abx * abx + aby * aby;
-
-      let t: number;
-      if (ab2 <= 1e-9) {
-        t = 0.5;
-      } else {
-        const apx = x - ax, apy = y - ay;
-        t = Math.max(0.05, Math.min(0.95, (apx * abx + apy * aby) / ab2));
+      let t = 0.5;
+      if (ab2 > 1e-9) {
+        const apx = snapX - ax, apy = snapY - ay;
+        t = Math.max(0.01, Math.min(0.99, (apx * abx + apy * aby) / ab2));
       }
-
-      const snapX = ax + abx * t;
-      const snapY = ay + aby * t;
 
       const newNodeId = nextId('J', data.nodes);
       let newNode: NodeElement;
@@ -1940,27 +1935,29 @@ export default function Home() {
     }
   };
 
-  // Delete/Backspace com elemento selecionado na aba GIS → apaga o elemento
+  // Delete/Backspace com elemento selecionado na aba GIS → apaga o elemento.
+  // Usa fase de captura para não ser bloqueado pelo canvas do MapLibre.
   useEffect(() => {
-    if (tab !== 'gis') return;
-    if (!selectedElement) return;
+    if (tab !== 'gis' || !selectedElement) return;
+    const el = selectedElement;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-      const t = e.target as HTMLElement | null;
-      if (t) {
-        const tag = t.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return;
       }
       e.preventDefault();
-      const el = selectedElement;
+      e.stopPropagation();
       const isNode = ['junction', 'reservoir', 'tank'].includes(el.type);
       if (window.confirm(`Apagar ${el.type} "${el.id}"?`)) {
-        handleElementDeleted(el.id, isNode ? 'node' : 'link');
+        updateNetwork(data => isNode ? deleteNode(data, el.id) : deleteLink(data, el.id));
+        setSelectedElement(null);
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [tab, selectedElement, handleElementDeleted]);
+    window.addEventListener('keydown', onKey, true); // capture: intercepta antes do canvas
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [tab, selectedElement]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Recebe IDs selecionados pelo lasso na aba GIS e abre o painel de
   // edição em massa. setTimeout sai do tick atual do MapLibre.
