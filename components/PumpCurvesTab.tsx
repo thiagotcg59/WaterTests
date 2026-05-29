@@ -20,9 +20,13 @@ const labelCls = 'block text-[10px] uppercase tracking-wider text-zinc-500 mb-0.
 
 // ── Mini-chart for a curve ────────────────────────────────────────────────────
 
+const lpsToM3h = (lps: number) => parseFloat((lps * 3.6).toFixed(4));
+const m3hToLps = (m3h: number) => m3h / 3.6;
+
 function CurveChart({ points, height = 120 }: { points: CurvePoint[]; height?: number }) {
   const sorted = [...points].sort((a, b) => a.x - b.x);
-  const data = sorted.map(p => ({ Q: p.x, H: p.y }));
+  // Exibe Q em m³/h (convertido de L/s interno)
+  const data = sorted.map(p => ({ Q: parseFloat(lpsToM3h(p.x).toFixed(2)), H: p.y }));
   if (data.length < 2) {
     return (
       <div className="flex items-center justify-center text-[10px] text-zinc-600" style={{ height }}>
@@ -34,11 +38,11 @@ function CurveChart({ points, height = 120 }: { points: CurvePoint[]; height?: n
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-        <XAxis dataKey="Q" tick={{ fontSize: 10, fill: '#71717a' }} label={{ value: 'Q (L/s)', position: 'insideBottomRight', offset: -4, fontSize: 9, fill: '#71717a' }} />
+        <XAxis dataKey="Q" tick={{ fontSize: 10, fill: '#71717a' }} label={{ value: 'Q (m³/h)', position: 'insideBottomRight', offset: -4, fontSize: 9, fill: '#71717a' }} />
         <YAxis tick={{ fontSize: 10, fill: '#71717a' }} label={{ value: 'H (m)', angle: -90, position: 'insideLeft', fontSize: 9, fill: '#71717a' }} />
         <Tooltip
           contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 6, fontSize: 11 }}
-          labelFormatter={(v) => `Q = ${v} L/s`}
+          labelFormatter={(v) => `Q = ${v} m³/h`}
           formatter={(v: unknown) => [`${v} m`, 'H'] as [string, string]}
         />
         <Line type="monotone" dataKey="H" stroke="#22c55e" strokeWidth={2} dot={{ r: 3, fill: '#22c55e' }} activeDot={{ r: 5 }} />
@@ -64,11 +68,11 @@ function PointRow({
       <td className="px-1 py-1">
         <input
           type="number"
-          step="0.01"
-          value={point.x}
+          step="0.1"
+          value={parseFloat(lpsToM3h(point.x).toFixed(4))}
           onChange={e => {
             const v = parseFloat(e.target.value);
-            if (Number.isFinite(v)) onChange(index, 'x', v);
+            if (Number.isFinite(v)) onChange(index, 'x', m3hToLps(v));
           }}
           className={inputCls}
           placeholder="0"
@@ -181,7 +185,7 @@ function CurveCard({
                 <thead>
                   <tr className="text-[10px] text-zinc-500">
                     <th className="w-6 text-center">#</th>
-                    <th className="px-1 text-left">Vazão Q (L/s)</th>
+                    <th className="px-1 text-left">Vazão Q (m³/h)</th>
                     <th className="px-1 text-left">Altura H (m)</th>
                     <th className="w-6" />
                   </tr>
@@ -220,14 +224,14 @@ function CurveCard({
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-[10px] text-zinc-500">
-                  <th className="text-left px-1">Q (L/s)</th>
+                  <th className="text-left px-1">Q (m³/h)</th>
                   <th className="text-left px-1">H (m)</th>
                 </tr>
               </thead>
               <tbody>
                 {[...curve.points].sort((a, b) => a.x - b.x).map((p, i) => (
                   <tr key={i} className="border-t border-zinc-800">
-                    <td className="px-1 py-0.5 font-mono text-zinc-300">{p.x}</td>
+                    <td className="px-1 py-0.5 font-mono text-zinc-300">{lpsToM3h(p.x).toFixed(2)}</td>
                     <td className="px-1 py-0.5 font-mono text-zinc-300">{p.y}</td>
                   </tr>
                 ))}
@@ -249,10 +253,11 @@ function NewCurveForm({ existingIds, onSave, onCancel }: {
 }) {
   const [id, setId] = useState('');
   const [desc, setDesc] = useState('');
+  // Pontos padrão em L/s internamente (0, 2.78, 5.56 L/s ≈ 0, 10, 20 m³/h)
   const [points, setPoints] = useState<CurvePoint[]>([
-    { x: 0, y: 40 },
-    { x: 10, y: 30 },
-    { x: 20, y: 15 },
+    { x: 0,              y: 40 },
+    { x: m3hToLps(10),   y: 30 },
+    { x: m3hToLps(20),   y: 15 },
   ]);
   const [error, setError] = useState<string | null>(null);
 
@@ -302,7 +307,7 @@ function NewCurveForm({ existingIds, onSave, onCancel }: {
         <thead>
           <tr className="text-[10px] text-zinc-500">
             <th className="w-6 text-center">#</th>
-            <th className="px-1 text-left">Vazão Q (L/s)</th>
+            <th className="px-1 text-left">Vazão Q (m³/h)</th>
             <th className="px-1 text-left">Altura H (m)</th>
             <th className="w-6" />
           </tr>

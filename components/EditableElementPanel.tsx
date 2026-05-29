@@ -681,7 +681,7 @@ function PumpParamsFields({ element, curves }: { element: LinkElement; curves?: 
   const assembled = assemblePumpParams(mode, curveId, power, speed, pattern);
   const curveList = Object.values(curves ?? {});
   const selectedCurve = curves?.[curveId];
-  const chartData = selectedCurve ? [...selectedCurve.points].sort((a, b) => a.x - b.x).map(p => ({ Q: p.x, H: p.y })) : [];
+  const chartData = selectedCurve ? [...selectedCurve.points].sort((a, b) => a.x - b.x).map(p => ({ Q: parseFloat((p.x * 3.6).toFixed(2)), H: p.y })) : [];
 
   const selectCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
   const inputCls = 'w-full rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-red-500';
@@ -746,7 +746,7 @@ function PumpParamsFields({ element, curves }: { element: LinkElement; curves?: 
                   <Tooltip
                     contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 4, fontSize: 10 }}
                     formatter={(v: unknown) => [`${v} m`, 'H'] as [string, string]}
-                    labelFormatter={(v) => `Q = ${v} L/s`}
+                    labelFormatter={(v) => `Q = ${v} m³/h`}
                   />
                   <Line type="monotone" dataKey="H" stroke="#22c55e" strokeWidth={2} dot={{ r: 2 }} />
                 </LineChart>
