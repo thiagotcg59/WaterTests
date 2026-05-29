@@ -1379,12 +1379,28 @@ export default function HydraulicMap({
             return;
           }
         }
-        // Junção criada sobre um trecho existente → divide o trecho e insere a junção
+        // Junção criada sobre um trecho existente → divide o trecho e insere a junção.
+        // Usa LYR_LINKS_HIT (hit-area de 14px) para detectar o trecho mais próximo,
+        // depois recalcula o snap preciso sobre a geometria do LYR_PIPES.
         if (targetKind === 'junction' && onNodeInsertedOnPipe) {
           const snap = findPipeSnapAt(m, e);
           if (snap) {
             onNodeInsertedOnPipe(snap.linkId, snap.lng, snap.lat);
             return;
+          }
+          // Fallback: tenta a hit-area mais larga (LYR_LINKS_HIT) para pegar
+          // trechos que não foram encontrados pelo LYR_PIPES no bbox exato.
+          const hitBbox: [[number, number], [number, number]] = [
+            [e.point.x - PIPE_SNAP_RADIUS_PX, e.point.y - PIPE_SNAP_RADIUS_PX],
+            [e.point.x + PIPE_SNAP_RADIUS_PX, e.point.y + PIPE_SNAP_RADIUS_PX],
+          ];
+          const hitFeats = m.queryRenderedFeatures(hitBbox, { layers: [LYR_LINKS_HIT] });
+          if (hitFeats.length > 0) {
+            const linkId = (hitFeats[0].properties?.id as string) ?? '';
+            if (linkId) {
+              onNodeInsertedOnPipe(linkId, e.lngLat.lng, e.lngLat.lat);
+              return;
+            }
           }
         }
         onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
