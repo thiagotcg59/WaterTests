@@ -455,9 +455,22 @@ export default function HydraulicMap({
       scrollZoom: true,
       attributionControl: { compact: true },
     });
+    // Zoom com scroll: mais rápido (padrão 1/450 → 1/150) e com inércia suave
     m.scrollZoom.enable();
+    m.scrollZoom.setWheelZoomRate(1 / 150);
+
+    // Pan mais leve: deceleração menor = desliza mais depois de soltar
+    m.dragPan.enable({
+      linearity: 0.3,
+      easing: (t: number) => t,
+      deceleration: 750,
+      maxSpeed: 1600,
+    });
+
+    // Botão direito: só rotaciona com Ctrl pressionado; solto = pan normal
+    m.dragRotate.disable();
+
     m.boxZoom.enable();
-    m.dragPan.enable();
     m.doubleClickZoom.enable();
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
     m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
