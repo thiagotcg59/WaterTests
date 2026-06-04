@@ -204,6 +204,7 @@ export default function HydraulicMap({
   const [showLayersPanel, setShowLayersPanel] = useState(true);
   const [pendingFirstNode, setPendingFirstNode] = useState<string | null>(null);
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
+  const [terrain3D, setTerrain3D] = useState(false);
   const [proximityHover, setProximityHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const draggingRef = useRef<string | null>(null);
   const draggingVertexRef = useRef<{ sectorId: string; vertexIndex: number } | null>(null);
@@ -1488,14 +1489,20 @@ export default function HydraulicMap({
       // Modo inspeção de coordenadas
       if (editMode === 'inspectCoord') {
         const [epanetX, epanetY] = geo.transform.toEpanet(e.lngLat.lng, e.lngLat.lat);
+        const terrainElev = terrain3D ? m.queryTerrainElevation(e.lngLat) : null;
         new maplibregl.Popup({ closeButton: true, className: 'dark-popup' })
           .setLngLat(e.lngLat)
           .setHTML(`
-            <div class="p-1 text-xs">
-              <div class="font-bold border-b border-zinc-700 mb-1 pb-1 text-red-500">Coordenadas EPANET</div>
+            <div class="p-1 text-xs" style="min-width:160px">
+              <div style="font-weight:700;border-bottom:1px solid #3f3f46;margin-bottom:4px;padding-bottom:4px;color:#ef4444">Coordenadas EPANET</div>
               <div><b>X:</b> ${epanetX.toFixed(2)}</div>
               <div><b>Y:</b> ${epanetY.toFixed(2)}</div>
-              <div class="mt-1 pt-1 border-t border-zinc-800 text-[10px] text-zinc-500">
+              ${terrainElev !== null && terrainElev !== undefined ? `
+              <div style="margin-top:6px;padding-top:6px;border-top:1px solid #3f3f46">
+                <div style="font-weight:700;color:#22c55e;margin-bottom:3px">Topografia</div>
+                <div><b>Elevação terreno:</b> ${terrainElev.toFixed(1)} m</div>
+              </div>` : ''}
+              <div style="margin-top:6px;padding-top:6px;border-top:1px solid #27272a;font-size:10px;color:#71717a">
                 Lat: ${e.lngLat.lat.toFixed(6)}<br/>
                 Lng: ${e.lngLat.lng.toFixed(6)}
               </div>
@@ -1503,6 +1510,31 @@ export default function HydraulicMap({
           `)
           .addTo(m);
         return;
+      }
+
+      // Modo 3D ativo sem inspectCoord: clique em local vazio mostra popup de topografia
+      if (terrain3D && editMode === 'select') {
+        const hitNode = findNodeIdAt(m, e);
+        const hitLink = findLinkIdAt(m, e);
+        if (!hitNode && !hitLink) {
+          const terrainElev = m.queryTerrainElevation(e.lngLat);
+          if (terrainElev !== null && terrainElev !== undefined) {
+            new maplibregl.Popup({ closeButton: true, className: 'dark-popup' })
+              .setLngLat(e.lngLat)
+              .setHTML(`
+                <div class="p-1 text-xs" style="min-width:140px">
+                  <div style="font-weight:700;color:#22c55e;margin-bottom:4px">Topografia</div>
+                  <div><b>Elevação terreno:</b> ${terrainElev.toFixed(1)} m</div>
+                  <div style="margin-top:4px;font-size:10px;color:#71717a">
+                    Lat: ${e.lngLat.lat.toFixed(6)}<br/>
+                    Lng: ${e.lngLat.lng.toFixed(6)}
+                  </div>
+                </div>
+              `)
+              .addTo(m);
+            return;
+          }
+        }
       }
 
       // Modo seleção (default)
@@ -1862,13 +1894,35 @@ export default function HydraulicMap({
       m.off('mouseup', onMouseUp);
     };
   }, [
-    editMode, mapReady, data,
+    editMode, mapReady, data, terrain3D,
     geo, onElementClick, onNodeMoved, onNodeAdded, onNodeInsertedOnPipe, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
     showSectorPolygons, onSectorGeometryUpdated,
     pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, findPipeVertexAt,
     onAddSmartSensor, onSmartSensorClick,
     activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexDeleted, onPipeVertexMoved,
   ]);
+
+  // Terreno 3D: ativa/desativa DEM + pitch ao alternar o botão 3D
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady) return;
+    if (terrain3D) {
+      if (!m.getSource('terrain-dem')) {
+        m.addSource('terrain-dem', {
+          type: 'raster-dem',
+          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+          encoding: 'terrarium',
+          tileSize: 256,
+          maxzoom: 14,
+        } as Parameters<typeof m.addSource>[1]);
+      }
+      m.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 });
+      m.easeTo({ pitch: 50, duration: 600 });
+    } else {
+      m.setTerrain(null);
+      m.easeTo({ pitch: 0, duration: 600 });
+    }
+  }, [terrain3D, mapReady]);
 
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
   useEffect(() => {
@@ -2110,12 +2164,14 @@ export default function HydraulicMap({
     <div className="gis-map-surface w-full h-full min-h-[700px] border border-zinc-800 rounded-lg overflow-hidden relative bg-zinc-900">
       <div ref={containerRef} className="absolute inset-0 w-full h-full" style={{ zIndex: 0 }} />
 
-      <Toolbar 
-        editMode={editMode} 
-        setEditMode={setEditMode} 
-        pendingFirstNode={pendingFirstNode} 
+      <Toolbar
+        editMode={editMode}
+        setEditMode={setEditMode}
+        pendingFirstNode={pendingFirstNode}
         polygonPoints={polygonPoints}
         setPolygonPoints={setPolygonPoints}
+        terrain3D={terrain3D}
+        setTerrain3D={setTerrain3D}
       />
       <BasemapSelector basemap={basemap} setBasemap={setBasemap} />
       <LayerPanel
@@ -2142,13 +2198,16 @@ export default function HydraulicMap({
 }
 
 function Toolbar({
-  editMode, setEditMode, pendingFirstNode, polygonPoints, setPolygonPoints
-}: { 
-  editMode: EditMode; 
-  setEditMode: (m: EditMode) => void; 
+  editMode, setEditMode, pendingFirstNode, polygonPoints, setPolygonPoints,
+  terrain3D, setTerrain3D,
+}: {
+  editMode: EditMode;
+  setEditMode: (m: EditMode) => void;
   pendingFirstNode: string | null;
   polygonPoints: [number, number][];
   setPolygonPoints: React.Dispatch<React.SetStateAction<[number, number][]>>;
+  terrain3D: boolean;
+  setTerrain3D: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const Btn = ({ mode, icon: Icon, label }: { mode: EditMode; icon: React.ComponentType<{className?: string}>; label: string }) => (
     <button
@@ -2175,6 +2234,19 @@ function Toolbar({
         <Btn mode="addPump" icon={Zap} label="Bomba" />
         <Btn mode="addValve" icon={SlidersHorizontal} label="Inserir válvula" />
         <Btn mode="inspectCoord" icon={Target} label="Inspecionar X,Y" />
+        <button
+          type="button"
+          title={terrain3D ? 'Desativar terreno 3D' : 'Ativar terreno 3D (topografia)'}
+          onClick={() => setTerrain3D(v => !v)}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border ${
+            terrain3D
+              ? 'bg-green-600 text-white border-green-600'
+              : 'bg-[#ffffff] text-[#3f3f46] border-[#d4d4d8] hover:border-[#a1a1aa] hover:bg-[#f4f4f5]'
+          }`}
+        >
+          <span className="font-bold">3D</span>
+          <span className="hidden md:inline">{terrain3D ? 'Terreno ON' : 'Terreno'}</span>
+        </button>
 
         <Btn mode="delete" icon={Trash2} label="Excluir" />
       </div>
