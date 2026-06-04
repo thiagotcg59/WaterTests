@@ -206,6 +206,7 @@ export default function HydraulicMap({
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
   const [terrain3D, setTerrain3D] = useState(false);
   const [terrainExag, setTerrainExag] = useState(1.5);
+  const [terrainPitch, setTerrainPitch] = useState(0);
   const [proximityHover, setProximityHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const draggingRef = useRef<string | null>(null);
   const draggingVertexRef = useRef<{ sectorId: string; vertexIndex: number } | null>(null);
@@ -1903,7 +1904,7 @@ export default function HydraulicMap({
     activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexDeleted, onPipeVertexMoved,
   ]);
 
-  // Terreno 3D: ativa/desativa DEM + pitch; atualiza exagero ao mudar o slider
+  // Terreno 3D: ativa/desativa DEM; exagero e pitch são independentes
   useEffect(() => {
     const m = mapRef.current;
     if (!m || !mapReady) return;
@@ -1918,12 +1919,19 @@ export default function HydraulicMap({
         } as Parameters<typeof m.addSource>[1]);
       }
       m.setTerrain({ source: 'terrain-dem', exaggeration: terrainExag });
-      m.easeTo({ pitch: 50, duration: 600 });
     } else {
       m.setTerrain(null);
-      m.easeTo({ pitch: 0, duration: 600 });
+      m.easeTo({ pitch: 0, duration: 400 });
+      setTerrainPitch(0);
     }
   }, [terrain3D, terrainExag, mapReady]);
+
+  // Pitch controlado pelo slider — só quando terrain3D ativo
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady || !terrain3D) return;
+    m.easeTo({ pitch: terrainPitch, duration: 300 });
+  }, [terrainPitch, terrain3D, mapReady]);
 
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
   useEffect(() => {
@@ -2190,25 +2198,49 @@ export default function HydraulicMap({
         </button>
 
         {terrain3D && (
-          <div className="bg-white/95 border border-zinc-300 rounded-md shadow-sm px-3 py-2 w-48">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide">Escala do relevo</span>
-              <span className="text-[11px] font-mono font-bold text-green-700">{terrainExag.toFixed(1)}×</span>
+          <div className="bg-white/95 border border-zinc-300 rounded-md shadow-sm px-3 py-2 w-52 space-y-2">
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide">Inclinação</span>
+                <span className="text-[11px] font-mono font-bold text-green-700">{terrainPitch}°</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="60"
+                step="5"
+                value={terrainPitch}
+                onChange={e => setTerrainPitch(parseInt(e.target.value))}
+                className="w-full accent-green-600 cursor-pointer"
+              />
+              <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
+                <span>Plano</span>
+                <span>60°</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min="0.5"
-              max="5"
-              step="0.1"
-              value={terrainExag}
-              onChange={e => setTerrainExag(parseFloat(e.target.value))}
-              className="w-full accent-green-600 cursor-pointer"
-            />
-            <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
-              <span>0.5×</span>
-              <span>5×</span>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide">Escala do relevo</span>
+                <span className="text-[11px] font-mono font-bold text-green-700">{terrainExag.toFixed(1)}×</span>
+              </div>
+              <input
+                type="range"
+                min="0.5"
+                max="5"
+                step="0.1"
+                value={terrainExag}
+                onChange={e => setTerrainExag(parseFloat(e.target.value))}
+                className="w-full accent-green-600 cursor-pointer"
+              />
+              <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
+                <span>0.5×</span>
+                <span>5×</span>
+              </div>
             </div>
-            <div className="mt-1.5 text-[10px] text-zinc-500">
+
+            <div className="border-t border-zinc-200 pt-1.5 text-[10px] text-zinc-500">
               Clique no mapa para ver a elevação do terreno
             </div>
           </div>
