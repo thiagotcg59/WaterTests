@@ -205,6 +205,7 @@ export default function HydraulicMap({
   const [pendingFirstNode, setPendingFirstNode] = useState<string | null>(null);
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
   const [terrain3D, setTerrain3D] = useState(false);
+  const [terrainExag, setTerrainExag] = useState(1.5);
   const [proximityHover, setProximityHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const draggingRef = useRef<string | null>(null);
   const draggingVertexRef = useRef<{ sectorId: string; vertexIndex: number } | null>(null);
@@ -1902,7 +1903,7 @@ export default function HydraulicMap({
     activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexDeleted, onPipeVertexMoved,
   ]);
 
-  // Terreno 3D: ativa/desativa DEM + pitch ao alternar o botão 3D
+  // Terreno 3D: ativa/desativa DEM + pitch; atualiza exagero ao mudar o slider
   useEffect(() => {
     const m = mapRef.current;
     if (!m || !mapReady) return;
@@ -1916,13 +1917,13 @@ export default function HydraulicMap({
           maxzoom: 14,
         } as Parameters<typeof m.addSource>[1]);
       }
-      m.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 });
+      m.setTerrain({ source: 'terrain-dem', exaggeration: terrainExag });
       m.easeTo({ pitch: 50, duration: 600 });
     } else {
       m.setTerrain(null);
       m.easeTo({ pitch: 0, duration: 600 });
     }
-  }, [terrain3D, mapReady]);
+  }, [terrain3D, terrainExag, mapReady]);
 
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
   useEffect(() => {
@@ -2170,10 +2171,50 @@ export default function HydraulicMap({
         pendingFirstNode={pendingFirstNode}
         polygonPoints={polygonPoints}
         setPolygonPoints={setPolygonPoints}
-        terrain3D={terrain3D}
-        setTerrain3D={setTerrain3D}
       />
       <BasemapSelector basemap={basemap} setBasemap={setBasemap} />
+
+      {/* Painel 3D Terreno — canto superior direito, acima dos controles de zoom */}
+      <div className="absolute top-3 right-12 z-10 flex flex-col gap-1 items-end">
+        <button
+          type="button"
+          title={terrain3D ? 'Desativar terreno 3D' : 'Ativar terreno 3D com topografia'}
+          onClick={() => setTerrain3D(v => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold border shadow-sm transition-colors ${
+            terrain3D
+              ? 'bg-green-600 text-white border-green-500 hover:bg-green-500'
+              : 'bg-white/95 text-zinc-700 border-zinc-300 hover:border-zinc-500 hover:bg-zinc-50'
+          }`}
+        >
+          3D Terreno
+        </button>
+
+        {terrain3D && (
+          <div className="bg-white/95 border border-zinc-300 rounded-md shadow-sm px-3 py-2 w-48">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide">Escala do relevo</span>
+              <span className="text-[11px] font-mono font-bold text-green-700">{terrainExag.toFixed(1)}×</span>
+            </div>
+            <input
+              type="range"
+              min="0.5"
+              max="5"
+              step="0.1"
+              value={terrainExag}
+              onChange={e => setTerrainExag(parseFloat(e.target.value))}
+              className="w-full accent-green-600 cursor-pointer"
+            />
+            <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
+              <span>0.5×</span>
+              <span>5×</span>
+            </div>
+            <div className="mt-1.5 text-[10px] text-zinc-500">
+              Clique no mapa para ver a elevação do terreno
+            </div>
+          </div>
+        )}
+      </div>
+
       <LayerPanel
         open={showLayersPanel} setOpen={setShowLayersPanel}
         layers={layers} toggleLayer={toggleLayer}
@@ -2199,15 +2240,12 @@ export default function HydraulicMap({
 
 function Toolbar({
   editMode, setEditMode, pendingFirstNode, polygonPoints, setPolygonPoints,
-  terrain3D, setTerrain3D,
 }: {
   editMode: EditMode;
   setEditMode: (m: EditMode) => void;
   pendingFirstNode: string | null;
   polygonPoints: [number, number][];
   setPolygonPoints: React.Dispatch<React.SetStateAction<[number, number][]>>;
-  terrain3D: boolean;
-  setTerrain3D: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const Btn = ({ mode, icon: Icon, label }: { mode: EditMode; icon: React.ComponentType<{className?: string}>; label: string }) => (
     <button
@@ -2234,20 +2272,6 @@ function Toolbar({
         <Btn mode="addPump" icon={Zap} label="Bomba" />
         <Btn mode="addValve" icon={SlidersHorizontal} label="Inserir válvula" />
         <Btn mode="inspectCoord" icon={Target} label="Inspecionar X,Y" />
-        <button
-          type="button"
-          title={terrain3D ? 'Desativar terreno 3D' : 'Ativar terreno 3D (topografia)'}
-          onClick={() => setTerrain3D(v => !v)}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border ${
-            terrain3D
-              ? 'bg-green-600 text-white border-green-600'
-              : 'bg-[#ffffff] text-[#3f3f46] border-[#d4d4d8] hover:border-[#a1a1aa] hover:bg-[#f4f4f5]'
-          }`}
-        >
-          <span className="font-bold">3D</span>
-          <span className="hidden md:inline">{terrain3D ? 'Terreno ON' : 'Terreno'}</span>
-        </button>
-
         <Btn mode="delete" icon={Trash2} label="Excluir" />
       </div>
       {editMode === 'addPipe' && (
