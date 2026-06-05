@@ -1424,10 +1424,20 @@ export default function HydraulicMap({
           const snap = findPipeSnapAt(m, e);
           if (snap) {
             onNodeInsertedOnPipe(snap.linkId, snap.lng, snap.lat);
+            // Auto-elev via Copernicus para junção inserida no trecho
+            if (terrain3D && onUpdateNodeElevations) {
+              autoFetchElev(snap.lat, snap.lng, onUpdateNodeElevations);
+            }
             return;
           }
         }
-        onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
+        // Criação de nó em espaço vazio
+        if (terrain3D && onNodeAddedGetId && onUpdateNodeElevations) {
+          const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
+          if (newId) autoFetchElev(e.lngLat.lat, e.lngLat.lng, onUpdateNodeElevations, newId);
+        } else {
+          onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
+        }
         return;
       }
 
@@ -1995,6 +2005,41 @@ export default function HydraulicMap({
     if (!m || !mapReady) return;
     m.easeTo({ pitch: terrainPitch, duration: 250 });
   }, [terrainPitch, mapReady]);
+
+  // Busca elevação Copernicus para uma coordenada e chama o callback com o resultado
+  const autoFetchElev = (
+    lat: number, lng: number,
+    cb: (updates: Record<string, number>) => void,
+    nodeId?: string,
+  ) => {
+    // Se não temos nodeId ainda (ex: junção inserida no trecho), aguardamos um tick
+    // para que a rede atualize e o ID esteja disponível via data.nodes
+    const doFetch = (id: string) => {
+      fetch(`https://api.opentopodata.org/v1/copernicus30m?locations=${lat.toFixed(6)},${lng.toFixed(6)}`)
+        .then(r => r.json())
+        .then(d => {
+          const elev = (d?.results as Array<{ elevation: number | null }> | undefined)?.[0]?.elevation;
+          if (elev != null) cb({ [id]: elev });
+        })
+        .catch(() => {});
+    };
+
+    if (nodeId) {
+      doFetch(nodeId);
+      return;
+    }
+    // Sem ID: descobre o nó mais próximo da coordenada após um tick
+    setTimeout(() => {
+      let closest: { id: string; d2: number } | null = null;
+      for (const n of Object.values(data.nodes)) {
+        if (!n.coordinates || n.type === 'reservoir') continue;
+        const [nLng, nLat] = geo.transform.toLngLat(n.coordinates.x, n.coordinates.y);
+        const d2 = (nLat - lat) ** 2 + (nLng - lng) ** 2;
+        if (!closest || d2 < closest.d2) closest = { id: n.id, d2 };
+      }
+      if (closest) doFetch(closest.id);
+    }, 50);
+  };
 
   // Sincroniza elevações de todos os nós com o MDT Copernicus (lote de 100)
   const handleSyncElevations = async () => {
