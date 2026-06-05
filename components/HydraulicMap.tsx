@@ -33,6 +33,7 @@ interface HydraulicMapProps {
   onPumpAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
   onValveInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
+  onUpdateNodeElevations?: (updates: Record<string, number>) => void;
   onElementDeleted?: (id: string, kind: 'node' | 'link') => void;
   /** Disparado em right-click sobre um elemento. Recebe id, kind e
    *  coordenadas de viewport (clientX/clientY) para posicionar um menu
@@ -187,6 +188,7 @@ export default function HydraulicMap({
   activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexMoved, onPipeVertexDeleted,
   anchor, frozenCenter, refitKey,
   customerMeters = [], showCustomerMeters = true, onCustomerMeterClick,
+  onUpdateNodeElevations,
 }: HydraulicMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -207,6 +209,7 @@ export default function HydraulicMap({
   const [terrain3D, setTerrain3D] = useState(false);
   const [terrainExag, setTerrainExag] = useState(1.5);
   const [terrainPitch, setTerrainPitch] = useState(0);
+  const [elevSync, setElevSync] = useState<{ running: boolean; done: number; total: number; done_count?: number } | null>(null);
   const [proximityHover, setProximityHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const draggingRef = useRef<string | null>(null);
   const draggingVertexRef = useRef<{ sectorId: string; vertexIndex: number } | null>(null);
@@ -1993,6 +1996,46 @@ export default function HydraulicMap({
     m.easeTo({ pitch: terrainPitch, duration: 250 });
   }, [terrainPitch, mapReady]);
 
+  // Sincroniza elevações de todos os nós com o MDT Copernicus (lote de 100)
+  const handleSyncElevations = async () => {
+    if (!onUpdateNodeElevations) return;
+    const nodes = Object.values(data.nodes).filter(
+      n => n.coordinates && (n.type === 'junction' || n.type === 'tank')
+    );
+    if (nodes.length === 0) return;
+
+    setElevSync({ running: true, done: 0, total: nodes.length });
+    const updates: Record<string, number> = {};
+    const BATCH = 100;
+
+    for (let i = 0; i < nodes.length; i += BATCH) {
+      const batch = nodes.slice(i, i + BATCH);
+      const locations = batch.map(n => {
+        const [lng, lat] = geo.transform.toLngLat(n.coordinates!.x, n.coordinates!.y);
+        return `${lat.toFixed(6)},${lng.toFixed(6)}`;
+      }).join('|');
+
+      try {
+        const r = await fetch(
+          `https://api.opentopodata.org/v1/copernicus30m?locations=${locations}`
+        );
+        const d = await r.json();
+        (d.results as Array<{ elevation: number | null }> | undefined)?.forEach((res, idx) => {
+          if (res.elevation != null) updates[batch[idx].id] = res.elevation;
+        });
+      } catch { /* ignora falha de rede em lote */ }
+
+      setElevSync({ running: true, done: Math.min(i + BATCH, nodes.length), total: nodes.length });
+
+      // Rate-limit: 1 req/s na camada gratuita
+      if (i + BATCH < nodes.length) await new Promise(r => setTimeout(r, 1100));
+    }
+
+    onUpdateNodeElevations(updates);
+    setElevSync({ running: false, done: nodes.length, total: nodes.length, done_count: Object.keys(updates).length });
+    setTimeout(() => setElevSync(null), 4000);
+  };
+
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
   useEffect(() => {
     setPendingFirstNode(null);
@@ -2264,6 +2307,33 @@ export default function HydraulicMap({
               Relevo Copernicus MDT ativo.<br/>
               Clique no mapa para ver a elevação.
             </div>
+
+            {/* Sincronizar elevações */}
+            {onUpdateNodeElevations && (
+              <div>
+                <button
+                  type="button"
+                  disabled={elevSync?.running}
+                  onClick={handleSyncElevations}
+                  className="w-full rounded py-1.5 text-[10px] font-semibold transition-colors bg-green-600 text-white hover:bg-green-500 disabled:opacity-60 disabled:cursor-wait"
+                >
+                  {elevSync?.running ? `Atualizando… ${elevSync.done}/${elevSync.total}` : 'Sincronizar elevações do terreno'}
+                </button>
+                {elevSync?.running && (
+                  <div className="mt-1 h-1.5 w-full rounded-full bg-zinc-200 overflow-hidden">
+                    <div
+                      className="h-full bg-green-500 transition-all"
+                      style={{ width: `${(elevSync.done / elevSync.total) * 100}%` }}
+                    />
+                  </div>
+                )}
+                {!elevSync?.running && elevSync?.done_count != null && (
+                  <div className="mt-1 text-[10px] text-green-700 font-semibold">
+                    ✓ {elevSync.done_count} nós atualizados
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <div className="flex items-center justify-between mb-1">
