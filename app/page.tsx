@@ -1959,26 +1959,6 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey, true);
   }, [tab, selectedElement]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Aplica atualizações de elevação vindas do sync com MDT Copernicus
-  const handleUpdateNodeElevations = (updates: Record<string, number>) => {
-    updateNetwork(data => {
-      const nodes = { ...data.nodes };
-      for (const [id, elev] of Object.entries(updates)) {
-        const node = nodes[id];
-        if (!node) continue;
-        if (node.type === 'junction' || node.type === 'tank') {
-          nodes[id] = { ...node, elevation: elev };
-        }
-      }
-      return { ...data, nodes };
-    });
-    setSelectedElement(prev =>
-      prev && updates[prev.id] !== undefined && (prev.type === 'junction' || prev.type === 'tank')
-        ? { ...prev, elevation: updates[prev.id] }
-        : prev
-    );
-  };
-
   // Recebe IDs selecionados pelo lasso na aba GIS e abre o painel de
   // edição em massa. setTimeout sai do tick atual do MapLibre.
   const handleLassoSelect = (nodeIds: string[], linkIds: string[]) => {
@@ -3262,7 +3242,6 @@ export default function Home() {
                         onNodeAdded={handleNodeAdded}
                         onNodeAddedGetId={handleNodeAddedGetId}
                         onNodeInsertedOnPipe={handleNodeInsertedOnPipe}
-                        onUpdateNodeElevations={handleUpdateNodeElevations}
                         onPipeAdded={handlePipeAdded}
                         onPumpAdded={handlePumpAdded}
                         onPipeConnectedToLink={handlePipeConnectedToLink}

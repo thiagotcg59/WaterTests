@@ -33,7 +33,6 @@ interface HydraulicMapProps {
   onPumpAdded?: (sourceId: string, targetId: string) => void;
   onPipeConnectedToLink?: (sourceId: string, linkId: string, lng: number, lat: number) => void;
   onValveInsertedOnPipe?: (linkId: string, lng: number, lat: number) => void;
-  onUpdateNodeElevations?: (updates: Record<string, number>) => void;
   onElementDeleted?: (id: string, kind: 'node' | 'link') => void;
   /** Disparado em right-click sobre um elemento. Recebe id, kind e
    *  coordenadas de viewport (clientX/clientY) para posicionar um menu
@@ -188,7 +187,6 @@ export default function HydraulicMap({
   activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexMoved, onPipeVertexDeleted,
   anchor, frozenCenter, refitKey,
   customerMeters = [], showCustomerMeters = true, onCustomerMeterClick,
-  onUpdateNodeElevations,
 }: HydraulicMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -206,10 +204,6 @@ export default function HydraulicMap({
   const [showLayersPanel, setShowLayersPanel] = useState(true);
   const [pendingFirstNode, setPendingFirstNode] = useState<string | null>(null);
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
-  const [terrain3D, setTerrain3D] = useState(false);
-  const [terrainExag, setTerrainExag] = useState(1.5);
-  const [terrainPitch, setTerrainPitch] = useState(0);
-  const [elevSync, setElevSync] = useState<{ running: boolean; done: number; total: number; done_count?: number } | null>(null);
   const [proximityHover, setProximityHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const draggingRef = useRef<string | null>(null);
   const draggingVertexRef = useRef<{ sectorId: string; vertexIndex: number } | null>(null);
@@ -1424,20 +1418,10 @@ export default function HydraulicMap({
           const snap = findPipeSnapAt(m, e);
           if (snap) {
             onNodeInsertedOnPipe(snap.linkId, snap.lng, snap.lat);
-            // Auto-elev via Copernicus para junção inserida no trecho
-            if (terrain3D && onUpdateNodeElevations) {
-              autoFetchElev(snap.lat, snap.lng, onUpdateNodeElevations);
-            }
             return;
           }
         }
-        // Criação de nó em espaço vazio
-        if (terrain3D && onNodeAddedGetId && onUpdateNodeElevations) {
-          const newId = onNodeAddedGetId(e.lngLat.lng, e.lngLat.lat);
-          if (newId) autoFetchElev(e.lngLat.lat, e.lngLat.lng, onUpdateNodeElevations, newId);
-        } else {
-          onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
-        }
+        onNodeAdded?.(e.lngLat.lng, e.lngLat.lat);
         return;
       }
 
@@ -1515,75 +1499,23 @@ export default function HydraulicMap({
       }
 
       // Modo inspeção de coordenadas
-      // Função auxiliar: mostra popup de topografia via API Copernicus (async)
-      const showTopoPopup = (lngLat: maplibregl.LngLat, extraHtml = '') => {
-        const popup = new maplibregl.Popup({ closeButton: true, className: 'dark-popup' })
-          .setLngLat(lngLat)
+      if (editMode === 'inspectCoord') {
+        const [epanetX, epanetY] = geo.transform.toEpanet(e.lngLat.lng, e.lngLat.lat);
+        new maplibregl.Popup({ closeButton: true, className: 'dark-popup' })
+          .setLngLat(e.lngLat)
           .setHTML(`
-            <div style="min-width:160px;padding:4px;font-size:11px">
-              ${extraHtml}
-              <div style="color:#22c55e;font-weight:700;margin-bottom:3px">Topografia (Copernicus)</div>
-              <div style="color:#a1a1aa;font-size:10px">Consultando MDT…</div>
-              <div style="margin-top:4px;font-size:10px;color:#71717a">
-                Lat: ${lngLat.lat.toFixed(6)}<br/>Lng: ${lngLat.lng.toFixed(6)}
+            <div class="p-1 text-xs">
+              <div class="font-bold border-b border-zinc-700 mb-1 pb-1 text-red-500">Coordenadas EPANET</div>
+              <div><b>X:</b> ${epanetX.toFixed(2)}</div>
+              <div><b>Y:</b> ${epanetY.toFixed(2)}</div>
+              <div class="mt-1 pt-1 border-t border-zinc-800 text-[10px] text-zinc-500">
+                Lat: ${e.lngLat.lat.toFixed(6)}<br/>
+                Lng: ${e.lngLat.lng.toFixed(6)}
               </div>
             </div>
           `)
           .addTo(m);
-        fetch(`https://api.opentopodata.org/v1/copernicus30m?locations=${lngLat.lat},${lngLat.lng}`)
-          .then(r => r.json())
-          .then(d => {
-            const elev = d?.results?.[0]?.elevation;
-            if (elev == null) return;
-            popup.setHTML(`
-              <div style="min-width:160px;padding:4px;font-size:11px">
-                ${extraHtml}
-                <div style="color:#22c55e;font-weight:700;margin-bottom:3px">Topografia (Copernicus)</div>
-                <div><b>Elevação:</b> ${(elev as number).toFixed(1)} m</div>
-                <div style="margin-top:4px;font-size:10px;color:#71717a">
-                  Lat: ${lngLat.lat.toFixed(6)}<br/>Lng: ${lngLat.lng.toFixed(6)}
-                </div>
-              </div>
-            `);
-          })
-          .catch(() => {/* silencia falha de rede */});
-      };
-
-      if (editMode === 'inspectCoord') {
-        const [epanetX, epanetY] = geo.transform.toEpanet(e.lngLat.lng, e.lngLat.lat);
-        const coordHtml = `
-          <div style="font-weight:700;border-bottom:1px solid #3f3f46;margin-bottom:6px;padding-bottom:4px;color:#ef4444">
-            Coordenadas EPANET
-          </div>
-          <div><b>X:</b> ${epanetX.toFixed(2)}</div>
-          <div style="margin-bottom:6px"><b>Y:</b> ${epanetY.toFixed(2)}</div>
-        `;
-        if (terrain3D) {
-          showTopoPopup(e.lngLat, coordHtml);
-        } else {
-          new maplibregl.Popup({ closeButton: true, className: 'dark-popup' })
-            .setLngLat(e.lngLat)
-            .setHTML(`
-              <div style="min-width:150px;padding:4px;font-size:11px">
-                ${coordHtml}
-                <div style="font-size:10px;color:#71717a">
-                  Lat: ${e.lngLat.lat.toFixed(6)}<br/>Lng: ${e.lngLat.lng.toFixed(6)}
-                </div>
-              </div>
-            `)
-            .addTo(m);
-        }
         return;
-      }
-
-      // Terreno ativo + modo selecionar + clique em área vazia → mostra elevação Copernicus
-      if (terrain3D && editMode === 'select') {
-        const hitNode = findNodeIdAt(m, e);
-        const hitLink = findLinkIdAt(m, e);
-        if (!hitNode && !hitLink) {
-          showTopoPopup(e.lngLat);
-          return;
-        }
       }
 
       // Modo seleção (default)
@@ -1943,7 +1875,7 @@ export default function HydraulicMap({
       m.off('mouseup', onMouseUp);
     };
   }, [
-    editMode, mapReady, data, terrain3D,
+    editMode, mapReady, data,
     geo, onElementClick, onNodeMoved, onNodeAdded, onNodeInsertedOnPipe, onPipeAdded, onPumpAdded, onPipeConnectedToLink, onValveInsertedOnPipe, onElementDeleted,
     showSectorPolygons, onSectorGeometryUpdated,
     pendingFirstNode, findNodeIdAt, findLinkIdAt, findPipeSnapAt, findSmartSensorAt, findPipeVertexAt,
@@ -1951,135 +1883,6 @@ export default function HydraulicMap({
     activeNodeKind, onTransformNodeKind, onPipeVertexAdded, onPipeVertexDeleted, onPipeVertexMoved,
   ]);
 
-  // Terreno: hillshade leve (2D) + mesh 3D só quando pitch > 0
-  useEffect(() => {
-    const m = mapRef.current;
-    if (!m || !mapReady) return;
-
-    const SRC = 'terrain-dem';
-    const LYR_SHADE = 'lyr-hillshade';
-
-    if (terrain3D) {
-      // Fonte DEM (AWS Terrarium = Copernicus/SRTM, gratuito)
-      if (!m.getSource(SRC)) {
-        m.addSource(SRC, {
-          type: 'raster-dem',
-          tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-          encoding: 'terrarium',
-          tileSize: 256,
-          maxzoom: 14,
-        } as Parameters<typeof m.addSource>[1]);
-      }
-      // Hillshade: relevo visual 2D, levíssimo, inserido abaixo das camadas da rede
-      if (!m.getLayer(LYR_SHADE)) {
-        m.addLayer({
-          id: LYR_SHADE,
-          type: 'hillshade',
-          source: SRC,
-          paint: {
-            'hillshade-shadow-color': '#2d2a1f',
-            'hillshade-highlight-color': '#fffaf0',
-            'hillshade-illumination-direction': 335,
-            'hillshade-exaggeration': 0.6,
-          },
-        } as Parameters<typeof m.addLayer>[0], LYR_PIPES); // abaixo dos tubos
-      }
-      // Mesh 3D só quando o usuário pedir pitch
-      if (terrainPitch > 0) {
-        m.setTerrain({ source: SRC, exaggeration: terrainExag });
-      } else {
-        m.setTerrain(null);
-      }
-    } else {
-      // Remove hillshade e mesh 3D
-      if (m.getLayer(LYR_SHADE)) m.removeLayer(LYR_SHADE);
-      m.setTerrain(null);
-      m.easeTo({ pitch: 0, duration: 400 });
-      setTerrainPitch(0);
-    }
-  }, [terrain3D, terrainExag, terrainPitch, mapReady]);
-
-  // Pitch: suaviza transição ao mover o slider
-  useEffect(() => {
-    const m = mapRef.current;
-    if (!m || !mapReady) return;
-    m.easeTo({ pitch: terrainPitch, duration: 250 });
-  }, [terrainPitch, mapReady]);
-
-  // Busca elevação Copernicus para uma coordenada e chama o callback com o resultado
-  const autoFetchElev = (
-    lat: number, lng: number,
-    cb: (updates: Record<string, number>) => void,
-    nodeId?: string,
-  ) => {
-    // Se não temos nodeId ainda (ex: junção inserida no trecho), aguardamos um tick
-    // para que a rede atualize e o ID esteja disponível via data.nodes
-    const doFetch = (id: string) => {
-      fetch(`https://api.opentopodata.org/v1/copernicus30m?locations=${lat.toFixed(6)},${lng.toFixed(6)}`)
-        .then(r => r.json())
-        .then(d => {
-          const elev = (d?.results as Array<{ elevation: number | null }> | undefined)?.[0]?.elevation;
-          if (elev != null) cb({ [id]: elev });
-        })
-        .catch(() => {});
-    };
-
-    if (nodeId) {
-      doFetch(nodeId);
-      return;
-    }
-    // Sem ID: descobre o nó mais próximo da coordenada após um tick
-    setTimeout(() => {
-      let closest: { id: string; d2: number } | null = null;
-      for (const n of Object.values(data.nodes)) {
-        if (!n.coordinates || n.type === 'reservoir') continue;
-        const [nLng, nLat] = geo.transform.toLngLat(n.coordinates.x, n.coordinates.y);
-        const d2 = (nLat - lat) ** 2 + (nLng - lng) ** 2;
-        if (!closest || d2 < closest.d2) closest = { id: n.id, d2 };
-      }
-      if (closest) doFetch(closest.id);
-    }, 50);
-  };
-
-  // Sincroniza elevações de todos os nós com o MDT Copernicus (lote de 100)
-  const handleSyncElevations = async () => {
-    if (!onUpdateNodeElevations) return;
-    const nodes = Object.values(data.nodes).filter(
-      n => n.coordinates && (n.type === 'junction' || n.type === 'tank')
-    );
-    if (nodes.length === 0) return;
-
-    setElevSync({ running: true, done: 0, total: nodes.length });
-    const updates: Record<string, number> = {};
-    const BATCH = 100;
-
-    for (let i = 0; i < nodes.length; i += BATCH) {
-      const batch = nodes.slice(i, i + BATCH);
-      const locations = batch.map(n => {
-        const [lng, lat] = geo.transform.toLngLat(n.coordinates!.x, n.coordinates!.y);
-        return `${lat.toFixed(6)},${lng.toFixed(6)}`;
-      }).join('|');
-
-      try {
-        const r = await fetch(
-          `https://api.opentopodata.org/v1/copernicus30m?locations=${locations}`
-        );
-        const d = await r.json();
-        (d.results as Array<{ elevation: number | null }> | undefined)?.forEach((res, idx) => {
-          if (res.elevation != null) updates[batch[idx].id] = res.elevation;
-        });
-      } catch { /* ignora falha de rede em lote */ }
-
-      setElevSync({ running: true, done: Math.min(i + BATCH, nodes.length), total: nodes.length });
-
-      // Rate-limit: 1 req/s na camada gratuita
-      if (i + BATCH < nodes.length) await new Promise(r => setTimeout(r, 1100));
-    }
-
-    onUpdateNodeElevations(updates);
-    setElevSync({ running: false, done: nodes.length, total: nodes.length, done_count: Object.keys(updates).length });
-    setTimeout(() => setElevSync(null), 4000);
-  };
 
   // Quando muda o modo de edição, cancela interações pendentes e ajusta zoom duplo
   useEffect(() => {
@@ -2329,94 +2132,6 @@ export default function HydraulicMap({
         setPolygonPoints={setPolygonPoints}
       />
       <BasemapSelector basemap={basemap} setBasemap={setBasemap} />
-
-      {/* Painel 3D Terreno — canto superior direito, acima dos controles de zoom */}
-      <div className="absolute top-3 right-12 z-10 flex flex-col gap-1 items-end">
-        <button
-          type="button"
-          title={terrain3D ? 'Desativar terreno 3D' : 'Ativar terreno 3D com topografia'}
-          onClick={() => setTerrain3D(v => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold border shadow-sm transition-colors ${
-            terrain3D
-              ? 'bg-green-600 text-white border-green-500 hover:bg-green-500'
-              : 'bg-white/95 text-zinc-700 border-zinc-300 hover:border-zinc-500 hover:bg-zinc-50'
-          }`}
-        >
-          3D Terreno
-        </button>
-
-        {terrain3D && (
-          <div className="bg-white/95 border border-zinc-300 rounded-md shadow-sm px-3 py-2 w-52 space-y-2">
-
-            <div className="text-[10px] text-zinc-500 border-b border-zinc-200 pb-1.5">
-              Relevo Copernicus MDT ativo.<br/>
-              Clique no mapa para ver a elevação.
-            </div>
-
-            {/* Sincronizar elevações */}
-            {onUpdateNodeElevations && (
-              <div>
-                <button
-                  type="button"
-                  disabled={elevSync?.running}
-                  onClick={handleSyncElevations}
-                  className="w-full rounded py-1.5 text-[10px] font-semibold transition-colors bg-green-600 text-white hover:bg-green-500 disabled:opacity-60 disabled:cursor-wait"
-                >
-                  {elevSync?.running ? `Atualizando… ${elevSync.done}/${elevSync.total}` : 'Sincronizar elevações do terreno'}
-                </button>
-                {elevSync?.running && (
-                  <div className="mt-1 h-1.5 w-full rounded-full bg-zinc-200 overflow-hidden">
-                    <div
-                      className="h-full bg-green-500 transition-all"
-                      style={{ width: `${(elevSync.done / elevSync.total) * 100}%` }}
-                    />
-                  </div>
-                )}
-                {!elevSync?.running && elevSync?.done_count != null && (
-                  <div className="mt-1 text-[10px] text-green-700 font-semibold">
-                    ✓ {elevSync.done_count} nós atualizados
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide">Inclinação 3D</span>
-                <span className="text-[11px] font-mono font-bold text-green-700">{terrainPitch}°</span>
-              </div>
-              <input
-                type="range" min="0" max="60" step="5"
-                value={terrainPitch}
-                onChange={e => setTerrainPitch(parseInt(e.target.value))}
-                className="w-full accent-green-600 cursor-pointer"
-              />
-              <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
-                <span>Plano (leve)</span><span>60°</span>
-              </div>
-            </div>
-
-            {terrainPitch > 0 && (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wide">Exagero vertical</span>
-                  <span className="text-[11px] font-mono font-bold text-green-700">{terrainExag.toFixed(1)}×</span>
-                </div>
-                <input
-                  type="range" min="0.5" max="5" step="0.1"
-                  value={terrainExag}
-                  onChange={e => setTerrainExag(parseFloat(e.target.value))}
-                  className="w-full accent-green-600 cursor-pointer"
-                />
-                <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
-                  <span>0.5×</span><span>5×</span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
       <LayerPanel
         open={showLayersPanel} setOpen={setShowLayersPanel}
         layers={layers} toggleLayer={toggleLayer}
